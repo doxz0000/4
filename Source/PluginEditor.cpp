@@ -632,190 +632,349 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
     const int widthPx =
         static_cast<int> (plot.getWidth());
 
-    if (widthPx > 0 && ! blockSamples.empty())
-    {
-        const size_t totalSamples =
-            blockSamples.size();
+if (widthPx > 0 && ! blockSamples.empty())
+{
+    const size_t totalSamples =
+        blockSamples.size();
 
-        //--------------------------------------------------------------------------
-        // Скільки семплів приблизно повинно бути в повному блоці.
-        //
-        // Це використовується ТІЛЬКИ для позиціонування waveform
-        // по ширині.
-        //--------------------------------------------------------------------------
+    //----------------------------------------------------------------------
+    // Скільки семплів повинно бути у повному музичному блоці.
+    //----------------------------------------------------------------------
 
-        const double sampleRate =
-            processor.getSampleRate() > 0.0
-                ? processor.getSampleRate()
-                : 44100.0;
+    const double sampleRate =
+        processor.getSampleRate() > 0.0
+            ? processor.getSampleRate()
+            : 44100.0;
 
-        const double samplesPerQuarter =
-            (60.0 / bpm) * sampleRate;
+    const double samplesPerQuarter =
+        (60.0 / bpm) * sampleRate;
 
-        const double expectedBlockSamples =
-            juce::jmax (
-                1.0,
-                samplesPerQuarter * totalQuarterNotes);
+    const double expectedBlockSamples =
+        juce::jmax (
+            1.0,
+            samplesPerQuarter * totalQuarterNotes);
 
-        //--------------------------------------------------------------------------
-        // Малюємо waveform тільки в межах вже записаної частини блоку.
-        //
-        // Тобто waveform НЕ буде розтягнута на весь екран,
-        // поки блок ще не дограв.
-        //--------------------------------------------------------------------------
+    //----------------------------------------------------------------------
+    // Поточний прогрес waveform.
+    //----------------------------------------------------------------------
 
-        const float progress =
-            juce::jlimit (
-                0.0f,
-                1.0f,
-                static_cast<float> (
-                    static_cast<double> (totalSamples)
-                    / expectedBlockSamples));
+    const float progress =
+        juce::jlimit (
+            0.0f,
+            1.0f,
+            static_cast<float> (
+                static_cast<double> (totalSamples)
+                / expectedBlockSamples));
 
-        const int visibleWidth =
-            juce::jmax (
-                1,
-                static_cast<int> (
-                    progress * static_cast<float> (widthPx)));
+    const int visibleWidth =
+        juce::jmax (
+            1,
+            static_cast<int> (
+                progress * static_cast<float> (widthPx)));
 
-        for (int px = 0;
-             px < visibleWidth;
-             ++px)
-        {
-            const size_t sampleA =
-                static_cast<size_t> (
-                    (static_cast<double> (px)
-                     / static_cast<double> (visibleWidth))
-                    * static_cast<double> (totalSamples));
-
-            size_t sampleB =
-                static_cast<size_t> (
-                    (static_cast<double> (px + 1)
-                     / static_cast<double> (visibleWidth))
-                    * static_cast<double> (totalSamples));
-
-            sampleB =
-                juce::jmax (
-                    sampleB,
-                    sampleA + static_cast<size_t> (1));
-
-            sampleB =
-                juce::jmin (
-                    sampleB,
-                    totalSamples);
-
-            if (sampleA >= totalSamples)
-                continue;
-
-            float minV = 1.0e6f;
-            float maxV = -1.0e6f;
-            float maxClip = 0.0f;
-
-            for (size_t s = sampleA;
-                 s < sampleB;
-                 ++s)
-            {
-                const auto& sample =
-                    blockSamples[s];
-
-                minV =
-                    juce::jmin (
-                        minV,
-                        sample.value);
-
-                maxV =
-                    juce::jmax (
-                        maxV,
-                        sample.value);
-
-                maxClip =
-                    juce::jmax (
-                        maxClip,
-                        sample.clipAmount);
-            }
-
-            const juce::Colour waveColour =
-                maxClip < 0.001f
-                    ? ClipOnizerColours::traceNormal
-                    : (maxClip < 0.85f
-                        ? ClipOnizerColours::traceSoftClip
-                        : ClipOnizerColours::traceHardClip);
-
-            g.setColour (waveColour);
-
-            const float x =
-                plot.getX()
-                + (static_cast<float> (px)
-                   / static_cast<float> (widthPx))
-                    * plot.getWidth();
-
-            const float yTop =
-                ampToY (maxV);
-
-            const float yBottom =
-                ampToY (minV);
-
-            g.drawLine (
-                x,
-                yTop,
-                x,
-                juce::jmax (
-                    yBottom,
-                    yTop + 1.0f),
-                1.0f);
-        }
-    }
-
-    //--------------------------------------------------------------------------
-    // THRESHOLD LINE.
-    //--------------------------------------------------------------------------
+    //----------------------------------------------------------------------
+    // Threshold / Knee.
+    //----------------------------------------------------------------------
 
     const float thresholdLin =
         processor.getThresholdLinear();
 
-    const float thresholdY =
-        ampToY (thresholdLin);
+    const float knee01 =
+        processor.getSoftnessNormalized();
+
+    const float kneeWidth =
+        knee01 > 0.001f
+            ? juce::jmax (0.0005f, knee01 * 1.0f)
+            : 0.0f;
+
+    const float kneeStart =
+        kneeWidth > 0.0f
+            ? juce::jmax (
+                0.0f,
+                thresholdLin - kneeWidth)
+            : thresholdLin;
+
+    //----------------------------------------------------------------------
+    // Малюємо waveform по X.
+    //----------------------------------------------------------------------
+
+    for (int px = 0;
+         px < visibleWidth;
+         ++px)
+    {
+        const size_t sampleA =
+            static_cast<size_t> (
+                (static_cast<double> (px)
+                 / static_cast<double> (visibleWidth))
+                * static_cast<double> (totalSamples));
+
+        size_t sampleB =
+            static_cast<size_t> (
+                (static_cast<double> (px + 1)
+                 / static_cast<double> (visibleWidth))
+                * static_cast<double> (totalSamples));
+
+        sampleB =
+            juce::jmax (
+                sampleB,
+                sampleA + static_cast<size_t> (1));
+
+        sampleB =
+            juce::jmin (
+                sampleB,
+                totalSamples);
+
+        if (sampleA >= totalSamples)
+            continue;
+
+        //------------------------------------------------------------------
+        // Шукаємо min/max.
+        //------------------------------------------------------------------
+
+        float minV = 1.0e6f;
+        float maxV = -1.0e6f;
+
+        bool hasGreen = false;
+        bool hasYellow = false;
+        bool hasRed = false;
+
+        for (size_t s = sampleA;
+             s < sampleB;
+             ++s)
+        {
+            const auto& sample =
+                blockSamples[s];
+
+            const float value =
+                sample.value;
+
+            const float absValue =
+                std::abs (value);
+
+            minV =
+                juce::jmin (
+                    minV,
+                    value);
+
+            maxV =
+                juce::jmax (
+                    maxV,
+                    value);
+
+            //------------------------------------------------------------------
+            // Визначаємо зону waveform.
+            //------------------------------------------------------------------
+
+            if (absValue > thresholdLin)
+            {
+                // ABOVE THRESHOLD = HARD CLIP
+                hasRed = true;
+            }
+            else if (kneeWidth > 0.0f
+                     && absValue > kneeStart)
+            {
+                // KNEE ZONE = SOFT CLIPPING
+                hasYellow = true;
+            }
+            else
+            {
+                // NORMAL SIGNAL
+                hasGreen = true;
+            }
+        }
+
+        //------------------------------------------------------------------
+        // Визначаємо колір.
+        //
+        // Якщо один pixel потрапив одразу у декілька зон,
+        // пріоритет:
+        //
+        // RED > YELLOW > GREEN
+        //
+        // Це важливо, щоб навіть дуже короткий overshoot
+        // був помітний користувачу.
+        //------------------------------------------------------------------
+
+        juce::Colour waveColour =
+            ClipOnizerColours::traceNormal;
+
+        if (hasYellow)
+            waveColour =
+                ClipOnizerColours::traceSoftClip;
+
+        if (hasRed)
+            waveColour =
+                ClipOnizerColours::traceHardClip;
+
+        g.setColour (waveColour);
+
+        //------------------------------------------------------------------
+        // Координати.
+        //------------------------------------------------------------------
+
+        const float x =
+            plot.getX()
+            + (static_cast<float> (px)
+               / static_cast<float> (widthPx))
+                * plot.getWidth();
+
+        const float yTop =
+            ampToY (maxV);
+
+        const float yBottom =
+            ampToY (minV);
+
+        //------------------------------------------------------------------
+        // Малюємо waveform.
+        //------------------------------------------------------------------
+
+        g.drawLine (
+            x,
+            yTop,
+            x,
+            juce::jmax (
+                yBottom,
+                yTop + 1.0f),
+            1.3f);
+    }
+}
+
+//==============================================================================
+// THRESHOLD + KNEE ZONES
+//==============================================================================
+
+const float thresholdLin =
+    processor.getThresholdLinear();
+
+const float knee01 =
+    processor.getSoftnessNormalized();
+
+const float kneeWidth =
+    knee01 > 0.001f
+        ? juce::jmax (0.0005f, knee01 * 1.0f)
+        : 0.0f;
+
+const float kneeStart =
+    kneeWidth > 0.0f
+        ? juce::jmax (
+            0.0f,
+            thresholdLin - kneeWidth)
+        : thresholdLin;
+
+//==============================================================================
+// POSITIVE THRESHOLD
+//==============================================================================
+
+const float thresholdY =
+    ampToY (thresholdLin);
+
+g.setColour (
+    ClipOnizerColours::thresholdLine);
+
+float dash[2] =
+{
+    5.0f,
+    4.0f
+};
+
+g.drawDashedLine (
+    juce::Line<float> (
+        plot.getX(),
+        thresholdY,
+        plot.getRight(),
+        thresholdY),
+    dash,
+    2,
+    1.5f);
+
+//==============================================================================
+// NEGATIVE THRESHOLD
+//==============================================================================
+
+const float negativeThresholdY =
+    ampToY (-thresholdLin);
+
+g.drawDashedLine (
+    juce::Line<float> (
+        plot.getX(),
+        negativeThresholdY,
+        plot.getRight(),
+        negativeThresholdY),
+    dash,
+    2,
+    1.5f);
+
+//==============================================================================
+// KNEE START — верхня межа жовтої області
+//==============================================================================
+
+if (kneeWidth > 0.0f
+    && kneeStart < thresholdLin)
+{
+    const float kneePositiveY =
+        ampToY (kneeStart);
+
+    const float kneeNegativeY =
+        ampToY (-kneeStart);
 
     g.setColour (
-        ClipOnizerColours::thresholdLine);
+        ClipOnizerColours::traceSoftClip.withAlpha (0.45f));
 
-    float dash[2] =
+    float kneeDash[2] =
     {
-        5.0f,
-        4.0f
+        3.0f,
+        5.0f
     };
 
     g.drawDashedLine (
         juce::Line<float> (
             plot.getX(),
-            thresholdY,
+            kneePositiveY,
             plot.getRight(),
-            thresholdY),
-        dash,
+            kneePositiveY),
+        kneeDash,
         2,
-        1.5f);
+        1.0f);
 
-    const float thresholdDb =
-        juce::Decibels::gainToDecibels (
-            thresholdLin);
+    g.drawDashedLine (
+        juce::Line<float> (
+            plot.getX(),
+            kneeNegativeY,
+            plot.getRight(),
+            kneeNegativeY),
+        kneeDash,
+        2,
+        1.0f);
+}
 
-    g.setFont (
-        juce::Font (
-            juce::Font::getDefaultMonospacedFontName(),
-            12.0f,
-            juce::Font::bold));
+//==============================================================================
+// LABEL
+//==============================================================================
 
-    g.drawText (
-        (thresholdDb > 0.0f
-            ? "THRESHOLD +"
-            : "THRESHOLD ")
-            + juce::String (thresholdDb, 1)
-            + " dB",
-        static_cast<int> (plot.getX()),
-        static_cast<int> (thresholdY) - 16,
-        200,
-        14,
-        juce::Justification::left);
+const float thresholdDb =
+    juce::Decibels::gainToDecibels (
+        thresholdLin);
+
+g.setFont (
+    juce::Font (
+        juce::Font::getDefaultMonospacedFontName(),
+        12.0f,
+        juce::Font::bold));
+
+g.setColour (
+    ClipOnizerColours::thresholdLine);
+
+g.drawText (
+    (thresholdDb > 0.0f
+        ? "THRESHOLD +"
+        : "THRESHOLD ")
+        + juce::String (thresholdDb, 1)
+        + " dB",
+    static_cast<int> (plot.getX()),
+    static_cast<int> (thresholdY) - 16,
+    200,
+    14,
+    juce::Justification::left);
 
     //--------------------------------------------------------------------------
     // Показуємо поточний прогрес блоку.
@@ -896,6 +1055,21 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
         6.0f,
         1.5f);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 //==============================================================================
 // CLIP INDICATOR (аналогова лампа)

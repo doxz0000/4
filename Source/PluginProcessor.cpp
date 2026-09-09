@@ -156,10 +156,49 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
 
             data[i] = outSample;
 
-            if (ch == 0)
+           if (ch == 0)
             {
-                scopeValue = deltaOn ? outSample : clipped;
-                scopeClipAmount = clipAmount;
+                // Осцилограф повинен показувати СИГНАЛ ДО CLIPPING,
+                // щоб користувач бачив, що саме заходить вище Threshold.
+                scopeValue = dry;
+
+                // Для кольору визначаємо реальну зону роботи кліпера.
+                //
+                // 0.0 = звичайний сигнал
+                // 0.5 = Softness / Knee зона
+                // 1.0 = сигнал вище Threshold, тобто hard clipping
+                const float absDry = std::abs (dry);
+
+                if (absDry > thresholdLin)
+                {
+                    scopeClipAmount = 1.0f;
+                }
+                else if (knee01 > 0.001f)
+                {
+                    const float kneeWidth =
+                        juce::jmax (0.0005f, knee01 * 1.0f);
+
+                    const float kneeStart =
+                        juce::jmax (0.0f, thresholdLin - kneeWidth);
+
+                    if (absDry > kneeStart)
+                    {
+                        scopeClipAmount =
+                            juce::jlimit (
+                                0.001f,
+                                0.849f,
+                                (absDry - kneeStart)
+                                / juce::jmax (0.0005f, thresholdLin - kneeStart));
+                    }
+                    else
+                    {
+                        scopeClipAmount = 0.0f;
+                    }
+                }
+                else
+                {
+                    scopeClipAmount = 0.0f;
+                }
             }
 
             blockMaxClip = juce::jmax (blockMaxClip, clipAmount);
