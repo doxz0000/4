@@ -128,6 +128,8 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     bool isLooping = false;
     double loopStart = 0.0;
     double loopEnd = 0.0;
+    static thread_local double previousPpq = 0.0;
+    static thread_local bool previousLooping = false;
 
     if (auto* hostPlayHead = getPlayHead())
     {
@@ -150,7 +152,7 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 currentQuarterNotesPerBar.store (qnPerBar, std::memory_order_release);
             }
 
-            if (auto ppq = position->getPpqPosition())
+         if (auto ppq = position->getPpqPosition())
             {
                 havePpq = true;
                 ppqStart = *ppq;
@@ -194,41 +196,75 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // -------------------------------------------------------------------------
     // We determine the musical block PER SAMPLE, not once per audio callback.
     // This fixes the common case where a 512-sample callback crosses a bar line.
-    auto getBlockIdAndPosition = [&] (double ppq,
-                                      int64_t& blockId,
-                                      double& positionInBlock) noexcept
+   auto getBlockIdAndPosition = [&] (double ppq,
+                                  int64_t& blockId,
+                                  double& positionInBlock) noexcept
+{
+    double musicalPpq = ppq;
+
+    if (isLooping && loopEnd > loopStart)
     {
-        double musicalPpq = ppq;
+        const double loopLength = loopEnd - loopStart;
 
-        if (isLooping && loopEnd > loopStart
-            && musicalPpq >= loopStart)
+        double relative = ppq - loopStart;
+
+        // Detect that the DAW has jumped back to the beginning
+        // of the loop.
+        if (previousLooping
+            && previousPpq >= loopStart
+            && previousPpq < loopEnd
+            && ppq < previousPpq)
         {
-            const double loopLength = loopEnd - loopStart;
-
-            double relative = musicalPpq - loopStart;
-            relative = std::fmod (relative, loopLength);
-
-            if (relative < 0.0)
-                relative += loopLength;
-
-            musicalPpq = loopStart + relative;
-
-            const double relativeBlock = relative / blockLengthQN;
-            blockId = static_cast<int64_t> (std::floor (relativeBlock));
-            positionInBlock = relative
-                            - static_cast<double> (blockId) * blockLengthQN;
+            scopeLoopCycle.fetch_add (
+                1,
+                std::memory_order_acq_rel);
         }
-        else
-        {
-            const double relativeBlock = musicalPpq / blockLengthQN;
-            blockId = static_cast<int64_t> (std::floor (relativeBlock));
-            positionInBlock = musicalPpq
-                            - static_cast<double> (blockId) * blockLengthQN;
-        }
+
+        relative = std::fmod (relative, loopLength);
+
+        if (relative < 0.0)
+            relative += loopLength;
+
+        const int64_t loopCycle =
+            scopeLoopCycle.load (
+                std::memory_order_relaxed);
+
+        // Continuous PPQ position across DAW loop repetitions.
+        musicalPpq =
+            static_cast<double> (loopCycle) * loopLength
+            + relative;
+
+        const double relativeBlock =
+            musicalPpq / blockLengthQN;
+
+        blockId =
+            static_cast<int64_t> (
+                std::floor (relativeBlock));
 
         positionInBlock =
-            juce::jlimit (0.0, blockLengthQN, positionInBlock);
-    };
+            musicalPpq
+            - static_cast<double> (blockId)
+              * blockLengthQN;
+    }
+    else
+    {
+        const double relativeBlock =
+            musicalPpq / blockLengthQN;
+
+        blockId =
+            static_cast<int64_t> (
+                std::floor (relativeBlock));
+
+        positionInBlock =
+            musicalPpq
+            - static_cast<double> (blockId)
+              * blockLengthQN;
+    }
+
+    previousPpq = ppq;
+    previousLooping = isLooping;
+};
+
 
     float blockMaxClip = 0.0f;
 

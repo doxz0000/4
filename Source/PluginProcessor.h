@@ -100,6 +100,10 @@ public:
     std::atomic<int64_t> scopeBlockId { std::numeric_limits<int64_t>::min() };
     std::atomic<int64_t> scopeBlockStartCounter { 0 };
 
+    // Unique transport cycle.
+    // Changes every time the DAW crosses the loop boundary.
+    std::atomic<int64_t> scopeLoopCycle { 0 };
+
     // Current host information, written only from processBlock().
     std::atomic<double> currentBpm { 120.0 };
     std::atomic<double> currentQuarterNotesPerBar { 4.0 };
