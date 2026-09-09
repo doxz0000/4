@@ -516,17 +516,35 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
 
                 // clipAmount from the audio thread is authoritative.
                 // This also catches threshold overshoots exactly.
-                if (sample.clipAmount >= 0.85f
-                    || absValue > thresholdLin)
+
+
+                // RED = ONLY the part of the waveform physically above Threshold.
+                // Do NOT use clipAmount here, because soft clipping can have
+                // clipAmount while the waveform itself is still below Threshold.
+                //
+                // Positive:
+                //      value > +thresholdLin  -> RED
+                //
+                // Negative:
+                //      value < -thresholdLin  -> RED
+                //
+                // Everything inside the Threshold remains non-red.
+
+                if (value > thresholdLin || value < -thresholdLin)
                 {
                     hasRed = true;
                 }
                 else if (sample.clipAmount > 0.001f
-                         || (kneeWidth > 0.0f
-                             && absValue > kneeStart))
+                        || (kneeWidth > 0.0f
+                            && absValue > kneeStart))
                 {
+                    // Soft clipping remains ORANGE exactly as before.
                     hasYellow = true;
                 }
+
+
+
+
             }
 
             juce::Colour waveColour =
