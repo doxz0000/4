@@ -105,9 +105,11 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     // --- BPM хоста, для синхронізації часової шкали осцилографа в UI ---
     // ВАЖЛИВО: це впливає лише на те, що ми показуємо у UI. Аудіо-сигнал
     // (та, відповідно, і latency) від цього ніяк не залежить.
-    if (auto* playHead = getPlayHead())
+    // ВИПРАВЛЕННЯ: локальна змінна перейменована з "playHead" на "hostPlayHead",
+    // щоб не затіняти член класу AudioProcessor::playHead (усуває warning C4458).
+    if (auto* hostPlayHead = getPlayHead())
     {
-        if (auto position = playHead->getPosition())
+        if (auto position = hostPlayHead->getPosition())
         {
             if (auto bpm = position->getBpm())
                 currentBpm.store (*bpm);

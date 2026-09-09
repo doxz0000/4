@@ -87,7 +87,9 @@ void ClipShaperComponent::paint (juce::Graphics& g)
     // Робочий діапазон амплітуди по обох осях: 0 .. 2.0 (лінійно),
     // щоб було видно і Threshold вище 0 dB (0 dB = амплітуда 1.0).
     constexpr float maxAmp = 2.0f;
-    auto ampToNorm = [] (float amp) { return juce::jlimit (0.0f, 1.0f, amp / maxAmp); };
+    // ВИПРАВЛЕННЯ: MSVC вимагає явного захоплення навіть constexpr-змінних
+    // у лямбдах у цьому контексті (звідси були C3493/C2064/C2737).
+    auto ampToNorm = [maxAmp] (float amp) { return juce::jlimit (0.0f, 1.0f, amp / maxAmp); };
 
     // --- Сітка dB ---
     g.setColour (ClipOnizerColours::scopeGrid);
