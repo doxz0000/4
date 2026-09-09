@@ -207,6 +207,8 @@ OscilloscopeComponent::OscilloscopeComponent (ClipOnizerAudioProcessor& p)
     : processor (p)
 {
     blockSamples.reserve (200000);
+    previousBlockSamples.reserve (200000);
+
     lastCapturedCounter =
         processor.scopeWriteCounter.load (std::memory_order_acquire);
 
@@ -217,16 +219,24 @@ void OscilloscopeComponent::setTimeDivision (float bars) noexcept
 {
     barsOnScreen = juce::jlimit (0.25f, 8.0f, bars);
 
+    // Changing the musical length starts a new capture cycle,
+    // but the waveform currently visible on screen is preserved.
+    previousBlockSamples = blockSamples;
+
+    previousBlockId = currentBlockId;
+
     blockSamples.clear();
-    currentBlockId = std::numeric_limits<int64_t>::min();
+
+    currentBlockId =
+        std::numeric_limits<int64_t>::min();
 
     const int64_t writeCounter =
-        processor.scopeWriteCounter.load (std::memory_order_acquire);
+        processor.scopeWriteCounter.load (
+            std::memory_order_acquire);
 
     lastCapturedCounter = writeCounter;
 
-    // This tells the audio thread to create a fresh musical block
-    // using the new time division.
+    // Tell the audio thread to create a fresh musical block.
     processor.setOscilloscopeBars (barsOnScreen);
 }
 
@@ -235,41 +245,74 @@ void OscilloscopeComponent::setVerticalZoom (float zoom) noexcept
     verticalZoom = juce::jlimit (0.2f, 4.0f, zoom);
 }
 
+
+
+
+
+
+
+
+
+
+
 void OscilloscopeComponent::captureNewSamples()
 {
-    // No getPlayHead() here.
-    // The audio thread already determined the musical block.
     const int64_t blockId =
-        processor.scopeBlockId.load (std::memory_order_acquire);
+        processor.scopeBlockId.load (
+            std::memory_order_acquire);
 
     const int64_t blockStart =
-        processor.scopeBlockStartCounter.load (std::memory_order_acquire);
+        processor.scopeBlockStartCounter.load (
+            std::memory_order_acquire);
 
     const int64_t writeCounter =
-        processor.scopeWriteCounter.load (std::memory_order_acquire);
+        processor.scopeWriteCounter.load (
+            std::memory_order_acquire);
 
     if (blockId == std::numeric_limits<int64_t>::min()
         || writeCounter <= 0)
         return;
 
-    // If the audio thread has moved to a new bar/block,
-    // throw away the previous waveform immediately.
+    // -------------------------------------------------------------------------
+    // NEW MUSICAL BLOCK
+    //
+    // Do NOT clear the waveform that is currently visible.
+    //
+    // Instead:
+    //     current block -> previous block
+    //     new block     -> starts empty
+    //
+    // This allows the previous waveform to remain visible while the
+    // new waveform is progressively drawn over it.
+    // -------------------------------------------------------------------------
+
     if (currentBlockId != blockId)
     {
+        if (currentBlockId != std::numeric_limits<int64_t>::min()
+            && ! blockSamples.empty())
+        {
+            previousBlockSamples = blockSamples;
+            previousBlockId = currentBlockId;
+        }
+
         currentBlockId = blockId;
+
         blockSamples.clear();
 
         lastCapturedCounter = blockStart;
     }
 
-    // If the audio thread changed the block while UI was reading,
-    // retry next timer tick rather than mixing two blocks.
+    // -------------------------------------------------------------------------
+    // COPY NEW SAMPLES
+    // -------------------------------------------------------------------------
+
     const int64_t blockIdBeforeCopy = blockId;
 
     if (lastCapturedCounter < blockStart)
         lastCapturedCounter = blockStart;
 
-    int64_t available = writeCounter - lastCapturedCounter;
+    int64_t available =
+        writeCounter - lastCapturedCounter;
 
     if (available <= 0)
         return;
@@ -278,37 +321,55 @@ void OscilloscopeComponent::captureNewSamples()
     if (available > ClipOnizerAudioProcessor::scopeBufferSize)
     {
         lastCapturedCounter =
-            writeCounter - ClipOnizerAudioProcessor::scopeBufferSize;
+            writeCounter
+            - ClipOnizerAudioProcessor::scopeBufferSize;
 
-        available = ClipOnizerAudioProcessor::scopeBufferSize;
+        available =
+            ClipOnizerAudioProcessor::scopeBufferSize;
+
         blockSamples.clear();
     }
 
-    // Don't let the UI vector grow beyond the ring buffer.
     const size_t maxStored =
-        static_cast<size_t> (ClipOnizerAudioProcessor::scopeBufferSize);
+        static_cast<size_t> (
+            ClipOnizerAudioProcessor::scopeBufferSize);
 
     for (int64_t n = 0; n < available; ++n)
     {
-        const int64_t absoluteIndex = lastCapturedCounter + n;
+        const int64_t absoluteIndex =
+            lastCapturedCounter + n;
+
         const int index =
-            static_cast<int> (absoluteIndex
-                              % ClipOnizerAudioProcessor::scopeBufferSize);
+            static_cast<int> (
+                absoluteIndex
+                % ClipOnizerAudioProcessor::scopeBufferSize);
 
         blockSamples.push_back (
-            processor.scopeBuffer[(size_t) index]);
+            processor.scopeBuffer[
+                static_cast<size_t> (index)]);
     }
 
     lastCapturedCounter = writeCounter;
 
+    // -------------------------------------------------------------------------
+    // CHECK IF BLOCK CHANGED DURING COPY
+    // -------------------------------------------------------------------------
+
     const int64_t blockIdAfterCopy =
-        processor.scopeBlockId.load (std::memory_order_acquire);
+        processor.scopeBlockId.load (
+            std::memory_order_acquire);
 
     if (blockIdAfterCopy != blockIdBeforeCopy)
     {
-        // A bar changed during the copy. Let the next timer tick
-        // start the new block cleanly.
+        // Keep the completed block as the previous waveform.
+        if (! blockSamples.empty())
+        {
+            previousBlockSamples = blockSamples;
+            previousBlockId = blockIdBeforeCopy;
+        }
+
         blockSamples.clear();
+
         currentBlockId = blockIdAfterCopy;
 
         lastCapturedCounter =
@@ -316,14 +377,36 @@ void OscilloscopeComponent::captureNewSamples()
                 std::memory_order_acquire);
     }
 
+    // -------------------------------------------------------------------------
+    // LIMIT MEMORY
+    // -------------------------------------------------------------------------
+
     if (blockSamples.size() > maxStored)
     {
         blockSamples.erase (
             blockSamples.begin(),
             blockSamples.begin()
-                + static_cast<ptrdiff_t> (blockSamples.size() - maxStored));
+                + static_cast<ptrdiff_t> (
+                    blockSamples.size() - maxStored));
+    }
+
+    if (previousBlockSamples.size() > maxStored)
+    {
+        previousBlockSamples.erase (
+            previousBlockSamples.begin(),
+            previousBlockSamples.begin()
+                + static_cast<ptrdiff_t> (
+                    previousBlockSamples.size() - maxStored));
     }
 }
+
+
+
+
+
+
+
+
 
 void OscilloscopeComponent::paint (juce::Graphics& g)
 {
@@ -418,48 +501,25 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
             plot.getY(), plot.getBottom());
     }
 
+
+
+
+
+
+
+
     // -------------------------------------------------------------------------
     // WAVEFORM
     //
-    // The important change:
-    // blockSamples contains ONLY the current musical block.
-    // It is always mapped to the complete fixed width.
-    //
-    // We do not calculate a scrolling start index.
+    // Previous block stays visible.
+    // Current block progressively overwrites it from left to right.
     // -------------------------------------------------------------------------
-    const int widthPx = static_cast<int> (plot.getWidth());
 
-    if (widthPx > 0 && ! blockSamples.empty())
+    const int widthPx =
+        static_cast<int> (plot.getWidth());
+
+    if (widthPx > 0)
     {
-        const size_t totalSamples = blockSamples.size();
-
-        const double sampleRate =
-            processor.getSampleRate() > 0.0
-                ? processor.getSampleRate()
-                : 44100.0;
-
-        const double expectedBlockSamples =
-            juce::jmax (
-                1.0,
-                (60.0 / bpm)
-                * sampleRate
-                * totalQuarterNotes);
-
-        const float progress =
-            juce::jlimit (
-                0.0f, 1.0f,
-                static_cast<float> (
-                    static_cast<double> (totalSamples)
-                    / expectedBlockSamples));
-
-        // Always map the CURRENT samples to the full block width.
-        // This gives a stable "build from left to right" waveform.
-        const int visibleWidth =
-            juce::jmax (
-                1,
-                static_cast<int> (
-                    progress * static_cast<float> (widthPx)));
-
         const float thresholdLin =
             processor.getThresholdLinear();
 
@@ -473,106 +533,236 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
 
         const float kneeStart =
             kneeWidth > 0.0f
-                ? juce::jmax (0.0f,
-                              thresholdLin - kneeWidth)
+                ? juce::jmax (
+                    0.0f,
+                    thresholdLin - kneeWidth)
                 : thresholdLin;
 
-        for (int px = 0; px < visibleWidth; ++px)
+        // ---------------------------------------------------------------------
+        // Expected size of one complete musical block.
+        // ---------------------------------------------------------------------
+
+        const double sampleRate =
+            processor.getSampleRate() > 0.0
+                ? processor.getSampleRate()
+                : 44100.0;
+
+        const double expectedBlockSamples =
+            juce::jmax (
+                1.0,
+                (60.0 / bpm)
+                * sampleRate
+                * totalQuarterNotes);
+
+        // ---------------------------------------------------------------------
+        // Calculate how much of the NEW waveform has already arrived.
+        //
+        // 0.0 = just started
+        // 1.0 = complete block
+        // ---------------------------------------------------------------------
+
+        const float progress =
+            juce::jlimit (
+                0.0f,
+                1.0f,
+                static_cast<float> (
+                    static_cast<double> (blockSamples.size())
+                    / expectedBlockSamples));
+
+        const int newVisibleWidth =
+            juce::jlimit (
+                0,
+                widthPx,
+                static_cast<int> (
+                    progress
+                    * static_cast<float> (widthPx)));
+
+        // ---------------------------------------------------------------------
+        // HELPER: draw one waveform.
+        // ---------------------------------------------------------------------
+
+        auto drawWaveform =
+            [&] (const std::vector<ScopeSample>& samples,
+                 int startPx,
+                 int endPx)
         {
-            const size_t sampleA =
-                static_cast<size_t> (
-                    (static_cast<double> (px)
-                     / static_cast<double> (visibleWidth))
-                    * static_cast<double> (totalSamples));
+            if (samples.empty())
+                return;
 
-            size_t sampleB =
-                static_cast<size_t> (
-                    (static_cast<double> (px + 1)
-                     / static_cast<double> (visibleWidth))
-                    * static_cast<double> (totalSamples));
+            if (startPx >= endPx)
+                return;
 
-            sampleB = juce::jmax (
-                sampleB, sampleA + static_cast<size_t> (1));
+            const int drawWidth =
+                endPx - startPx;
 
-            sampleB = juce::jmin (sampleB, totalSamples);
+            const size_t totalSamples =
+                samples.size();
 
-            if (sampleA >= totalSamples)
-                continue;
-
-            float minV = 1.0e6f;
-            float maxV = -1.0e6f;
-
-            bool hasYellow = false;
-            bool hasRed = false;
-
-            for (size_t s = sampleA; s < sampleB; ++s)
+            for (int px = startPx;
+                 px < endPx;
+                 ++px)
             {
-                const auto& sample = blockSamples[s];
-                const float value = sample.value;
-                const float absValue = std::abs (value);
+                const int localPx =
+                    px - startPx;
 
-                minV = juce::jmin (minV, value);
-                maxV = juce::jmax (maxV, value);
+                const size_t sampleA =
+                    static_cast<size_t> (
+                        (static_cast<double> (localPx)
+                         / static_cast<double> (drawWidth))
+                        * static_cast<double> (totalSamples));
 
-                // clipAmount from the audio thread is authoritative.
-                // This also catches threshold overshoots exactly.
+                size_t sampleB =
+                    static_cast<size_t> (
+                        (static_cast<double> (localPx + 1)
+                         / static_cast<double> (drawWidth))
+                        * static_cast<double> (totalSamples));
 
+                sampleB =
+                    juce::jmax (
+                        sampleB,
+                        sampleA + static_cast<size_t> (1));
 
-                // RED = ONLY the part of the waveform physically above Threshold.
-                // Do NOT use clipAmount here, because soft clipping can have
-                // clipAmount while the waveform itself is still below Threshold.
-                //
-                // Positive:
-                //      value > +thresholdLin  -> RED
-                //
-                // Negative:
-                //      value < -thresholdLin  -> RED
-                //
-                // Everything inside the Threshold remains non-red.
+                sampleB =
+                    juce::jmin (
+                        sampleB,
+                        totalSamples);
 
-                if (value > thresholdLin || value < -thresholdLin)
+                if (sampleA >= totalSamples)
+                    continue;
+
+                float minV = 1.0e6f;
+                float maxV = -1.0e6f;
+
+                bool hasYellow = false;
+                bool hasRed = false;
+
+                for (size_t s = sampleA;
+                     s < sampleB;
+                     ++s)
                 {
-                    hasRed = true;
+                    const auto& sample =
+                        samples[s];
+
+                    const float value =
+                        sample.value;
+
+                    const float absValue =
+                        std::abs (value);
+
+                    minV =
+                        juce::jmin (
+                            minV,
+                            value);
+
+                    maxV =
+                        juce::jmax (
+                            maxV,
+                            value);
+
+                    // clipAmount is calculated by
+                    // the audio thread and stored
+                    // in the ScopeSample.
+                    if (sample.clipAmount >= 0.85f)
+                        hasRed = true;
+                    else if (sample.clipAmount > 0.001f)
+                        hasYellow = true;
+
+                    // Additional protection:
+                    // values physically above threshold
+                    // are always considered clipped.
+                    if (absValue > thresholdLin)
+                        hasRed = true;
+
+                    if (kneeWidth > 0.0f
+                        && absValue > kneeStart
+                        && absValue <= thresholdLin)
+                    {
+                        hasYellow = true;
+                    }
                 }
-                else if (sample.clipAmount > 0.001f
-                        || (kneeWidth > 0.0f
-                            && absValue > kneeStart))
+
+                juce::Colour traceColour;
+
+                if (hasRed)
                 {
-                    // Soft clipping remains ORANGE exactly as before.
-                    hasYellow = true;
+                    traceColour =
+                        ClipOnizerColours::traceHardClip;
+                }
+                else if (hasYellow)
+                {
+                    traceColour =
+                        ClipOnizerColours::traceSoftClip;
+                }
+                else
+                {
+                    traceColour =
+                        ClipOnizerColours::traceNormal;
                 }
 
+                g.setColour (traceColour);
 
+                const float x =
+                    plot.getX()
+                    + static_cast<float> (px)
+                    / static_cast<float> (widthPx)
+                    * plot.getWidth();
 
+                const float y1 =
+                    ampToY (minV);
 
+                const float y2 =
+                    ampToY (maxV);
+
+                g.drawLine (
+                    x,
+                    y1,
+                    x,
+                    y2,
+                    2.0f);
             }
+        };
 
-            juce::Colour waveColour =
-                ClipOnizerColours::traceNormal;
+        // ---------------------------------------------------------------------
+        // 1. Draw PREVIOUS block over the complete display.
+        // ---------------------------------------------------------------------
 
-            if (hasYellow)
-                waveColour = ClipOnizerColours::traceSoftClip;
+        if (! previousBlockSamples.empty())
+        {
+            drawWaveform (
+                previousBlockSamples,
+                0,
+                widthPx);
+        }
 
-            if (hasRed)
-                waveColour = ClipOnizerColours::traceHardClip;
+        // ---------------------------------------------------------------------
+        // 2. Draw NEW block over the previous block.
+        //
+        // This is the actual overwrite.
+        // ---------------------------------------------------------------------
 
-            g.setColour (waveColour);
-
-            const float x =
-                plot.getX()
-                + (static_cast<float> (px)
-                   / static_cast<float> (widthPx))
-                  * plot.getWidth();
-
-            const float yTop = ampToY (maxV);
-            const float yBottom = ampToY (minV);
-
-            g.drawLine (
-                x, yTop, x,
-                juce::jmax (yBottom, yTop + 1.0f),
-                1.3f);
+        if (newVisibleWidth > 0
+            && ! blockSamples.empty())
+        {
+            drawWaveform (
+                blockSamples,
+                0,
+                newVisibleWidth);
         }
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     // Threshold lines
     const float thresholdLin =

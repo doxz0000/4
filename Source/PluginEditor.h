@@ -76,13 +76,27 @@ private:
     float barsOnScreen = 1.0f;
     float verticalZoom = 1.0f;
 
-    std::vector<ScopeSample> blockSamples;
 
-    // Absolute counter of the next sample to copy.
-    int64_t lastCapturedCounter = 0;
 
-    int64_t currentBlockId =
-        std::numeric_limits<int64_t>::min();
+// Current block being recorded.
+std::vector<ScopeSample> blockSamples;
+
+// Previous completed block.
+// It remains visible while the new block is being recorded.
+std::vector<ScopeSample> previousBlockSamples;
+
+// Absolute counter of the next sample to copy.
+int64_t lastCapturedCounter = 0;
+
+int64_t currentBlockId =
+    std::numeric_limits<int64_t>::min();
+
+int64_t previousBlockId =
+    std::numeric_limits<int64_t>::min();
+
+
+
+
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OscilloscopeComponent)
 };
