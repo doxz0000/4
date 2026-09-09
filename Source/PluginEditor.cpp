@@ -170,120 +170,731 @@ void ClipShaperComponent::paint (juce::Graphics& g)
 }
 
 //==============================================================================
-// REAL-TIME OSCILLOSCOPE
+// BLOCK-BASED REAL-TIME OSCILLOSCOPE
 //==============================================================================
-OscilloscopeComponent::OscilloscopeComponent (ClipOnizerAudioProcessor& p) : processor (p)
+
+OscilloscopeComponent::OscilloscopeComponent (ClipOnizerAudioProcessor& p)
+    : processor (p)
 {
+    blockSamples.reserve (262144);
+
+    lastCapturedWritePos =
+        processor.scopeWritePos.load (std::memory_order_relaxed);
+
     startTimerHz (30);
 }
+
+//==============================================================================
+// Отримуємо поточну музичну позицію DAW.
+//
+// Основний режим:
+//      PPQ -> точна музична синхронізація.
+//
+// Fallback:
+//      BPM + elapsed time.
+//
+// Це дозволяє осцилографу працювати і в DAW,
+// і в standalone режимі.
+//==============================================================================
+
+OscilloscopeComponent::BlockPosition
+OscilloscopeComponent::getCurrentBlockPosition()
+{
+    BlockPosition result;
+
+    const double bpm =
+        juce::jmax (20.0, processor.currentBpm.load());
+
+    result.bpm = bpm;
+
+    //--------------------------------------------------------------------------
+    // Спочатку пробуємо отримати реальну позицію DAW.
+    //--------------------------------------------------------------------------
+
+    if (auto* playHead = processor.getPlayHead())
+    {
+        if (auto position = playHead->getPosition())
+        {
+            if (auto ppq = position->getPpqPosition())
+            {
+                // -------------------------------------------------------------
+                // Time signature.
+                //
+                // Якщо DAW її не передала — використовуємо стандартний 4/4.
+                // -------------------------------------------------------------
+
+                double quarterNotesPerBar = 4.0;
+
+                if (auto timeSignature = position->getTimeSignature())
+                {
+                    const int numerator =
+                        juce::jmax (1, timeSignature->numerator);
+
+                    const int denominator =
+                        juce::jmax (1, timeSignature->denominator);
+
+                    quarterNotesPerBar =
+                        static_cast<double> (numerator)
+                        * (4.0 / static_cast<double> (denominator));
+                }
+
+                const double blockLength =
+                    quarterNotesPerBar * static_cast<double> (barsOnScreen);
+
+                // Позиція всередині музичного блоку.
+                const double absoluteBlockPosition =
+                    *ppq / blockLength;
+
+                const auto blockId =
+                    static_cast<int64_t> (
+                        std::floor (absoluteBlockPosition));
+
+                double positionInBlock =
+                    *ppq
+                    - static_cast<double> (blockId) * blockLength;
+
+                // Захист від дуже маленьких floating-point похибок.
+                if (positionInBlock < 0.0)
+                    positionInBlock = 0.0;
+
+                if (positionInBlock > blockLength)
+                    positionInBlock = blockLength;
+
+                result.valid = true;
+                result.blockId = blockId;
+                result.positionInBlock = positionInBlock;
+                result.blockLengthInQuarterNotes = blockLength;
+
+                return result;
+            }
+        }
+    }
+
+    //--------------------------------------------------------------------------
+    // FALLBACK
+    //
+    // Якщо PPQ недоступний, працюємо через BPM.
+    //--------------------------------------------------------------------------
+
+    const double nowSeconds =
+        juce::Time::getMillisecondCounterHiRes() * 0.001;
+
+    // Перший виклик.
+    if (fallbackLastTimeSeconds < 0.0)
+    {
+        fallbackLastTimeSeconds = nowSeconds;
+        fallbackBeatPosition = 0.0;
+    }
+    else
+    {
+        const double deltaSeconds =
+            juce::jlimit (
+                0.0,
+                0.25,
+                nowSeconds - fallbackLastTimeSeconds);
+
+        fallbackLastTimeSeconds = nowSeconds;
+
+        // BPM -> quarter notes.
+        fallbackBeatPosition +=
+            deltaSeconds * (bpm / 60.0);
+    }
+
+    const double quarterNotesPerBar = 4.0;
+
+    const double blockLength =
+        quarterNotesPerBar * static_cast<double> (barsOnScreen);
+
+    const double absoluteBlockPosition =
+        fallbackBeatPosition / blockLength;
+
+    const auto blockId =
+        static_cast<int64_t> (
+            std::floor (absoluteBlockPosition));
+
+    double positionInBlock =
+        fallbackBeatPosition
+        - static_cast<double> (blockId) * blockLength;
+
+    positionInBlock =
+        juce::jlimit (0.0, blockLength, positionInBlock);
+
+    result.valid = true;
+    result.blockId = blockId;
+    result.positionInBlock = positionInBlock;
+    result.blockLengthInQuarterNotes = blockLength;
+
+    return result;
+}
+
+//==============================================================================
+// Починаємо новий музичний блок.
+//==============================================================================
+
+void OscilloscopeComponent::startNewBlock (int64_t blockId)
+{
+    currentBlockId = blockId;
+
+    blockSamples.clear();
+
+    // Не дозволяємо vector постійно перевиділяти пам'ять
+    // під час роботи.
+    if (blockSamples.capacity() < 4096)
+        blockSamples.reserve (4096);
+}
+
+//==============================================================================
+// Забираємо нові семпли з processor.scopeBuffer.
+//
+// На відміну від старого коду, ми більше НЕ малюємо:
+//
+//     writePos - samplesToShow
+//
+// Тепер кожен новий аудіосемпл додається в поточний
+// музичний блок.
+//
+// Тому waveform фізично не рухається по екрану.
+// Він тільки заповнює фіксоване вікно зліва направо.
+//==============================================================================
+
+void OscilloscopeComponent::captureNewSamples()
+{
+    const auto position = getCurrentBlockPosition();
+
+    if (! position.valid)
+        return;
+
+    //--------------------------------------------------------------------------
+    // Перевіряємо зміну музичного блоку.
+    //--------------------------------------------------------------------------
+
+    if (currentBlockId != position.blockId)
+    {
+        startNewBlock (position.blockId);
+
+        lastCapturedWritePos =
+            processor.scopeWritePos.load (
+                std::memory_order_relaxed);
+
+        return;
+    }
+
+    //--------------------------------------------------------------------------
+    // Поточна позиція ring buffer.
+    //--------------------------------------------------------------------------
+
+    const int currentWritePos =
+        processor.scopeWritePos.load (
+            std::memory_order_relaxed);
+
+    const int bufferSize =
+        ClipOnizerAudioProcessor::scopeBufferSize;
+
+    int samplesAvailable =
+        currentWritePos - lastCapturedWritePos;
+
+    // Ring-buffer wrap.
+    if (samplesAvailable < 0)
+        samplesAvailable += bufferSize;
+
+    //--------------------------------------------------------------------------
+    // Якщо UI сильно відстав від audio thread,
+    // старі дані вже могли бути перезаписані.
+    //
+    // У такому випадку беремо тільки доступну останню частину.
+    //--------------------------------------------------------------------------
+
+    if (samplesAvailable >= bufferSize)
+    {
+        samplesAvailable = bufferSize - 1;
+
+        lastCapturedWritePos =
+            currentWritePos - samplesAvailable;
+
+        if (lastCapturedWritePos < 0)
+            lastCapturedWritePos += bufferSize;
+    }
+
+    //--------------------------------------------------------------------------
+    // Додаємо нові семпли до поточного блоку.
+    //--------------------------------------------------------------------------
+
+    for (int i = 0; i < samplesAvailable; ++i)
+    {
+        const int index =
+            (lastCapturedWritePos + i) % bufferSize;
+
+        blockSamples.push_back (
+            processor.scopeBuffer[(size_t) index]);
+    }
+
+    lastCapturedWritePos = currentWritePos;
+
+    //--------------------------------------------------------------------------
+    // Захист від неконтрольованого росту.
+    //
+    // 8 bars при нормальному BPM буде значно менше цього значення.
+    // Якщо host має дуже низький BPM — обмежуємо буфер.
+    //--------------------------------------------------------------------------
+
+    constexpr size_t maxStoredSamples = 2'000'000;
+
+    if (blockSamples.size() > maxStoredSamples)
+    {
+        const size_t removeCount =
+            blockSamples.size() - maxStoredSamples;
+
+        blockSamples.erase (
+            blockSamples.begin(),
+            blockSamples.begin() + static_cast<ptrdiff_t> (removeCount));
+    }
+}
+
+//==============================================================================
+// PAINT
+//==============================================================================
 
 void OscilloscopeComponent::paint (juce::Graphics& g)
 {
     auto bounds = getLocalBounds().toFloat();
+
+    //--------------------------------------------------------------------------
+    // Background.
+    //--------------------------------------------------------------------------
+
     g.setColour (ClipOnizerColours::scopeGlassBg);
     g.fillRoundedRectangle (bounds, 6.0f);
 
     auto plot = bounds.reduced (26.0f, 22.0f);
 
-    const double sampleRate     = processor.getSampleRate();
-    const double bpm            = juce::jmax (20.0, processor.currentBpm.load());
-    const double samplesPerBeat = sampleRate > 0.0 ? (60.0 / bpm) * sampleRate : 44100.0;
+    //--------------------------------------------------------------------------
+    // BPM / musical information.
+    //--------------------------------------------------------------------------
 
-    const int bufSize = ClipOnizerAudioProcessor::scopeBufferSize;
-    const int samplesToShow = (int) juce::jlimit (256.0, (double) bufSize,
-                                                   samplesPerBeat * (double) beatsOnScreen);
+    const double bpm =
+        juce::jmax (20.0, processor.currentBpm.load());
 
-    const int writePos = processor.scopeWritePos.load (std::memory_order_relaxed);
+    //--------------------------------------------------------------------------
+    // Vertical amplitude / zoom.
+    //--------------------------------------------------------------------------
 
-    // --- Вертикальна шкала (dB), з урахуванням visual-only zoom ---
     constexpr float baseRange = 2.0f;
-    const float effectiveRange = juce::jmax (0.05f, baseRange / juce::jmax (0.1f, verticalZoom));
+
+    const float effectiveRange =
+        juce::jmax (
+            0.05f,
+            baseRange / juce::jmax (0.1f, verticalZoom));
 
     auto ampToY = [&] (float amp)
     {
-        const float norm = juce::jlimit (-1.0f, 1.0f, amp / effectiveRange);
-        return plot.getCentreY() - norm * (plot.getHeight() * 0.5f);
+        const float norm =
+            juce::jlimit (
+                -1.0f,
+                1.0f,
+                amp / effectiveRange);
+
+        return plot.getCentreY()
+               - norm * (plot.getHeight() * 0.5f);
     };
 
-    g.setColour (ClipOnizerColours::scopeGrid);
+    //--------------------------------------------------------------------------
+    // Horizontal dB grid.
+    //--------------------------------------------------------------------------
+
     for (float db : { -24.0f, -12.0f, -6.0f, 0.0f, 6.0f })
     {
-        const float amp = juce::Decibels::decibelsToGain (db);
+        const float amp =
+            juce::Decibels::decibelsToGain (db);
+
         const float y = ampToY (amp);
+
         if (y >= plot.getY() && y <= plot.getBottom())
         {
             g.setColour (ClipOnizerColours::scopeGrid);
-            g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
+            g.drawHorizontalLine (
+                static_cast<int> (y),
+                plot.getX(),
+                plot.getRight());
 
-            g.setColour (ClipOnizerColours::textAmber.withAlpha (0.55f));
+            g.setColour (
+                ClipOnizerColours::textAmber.withAlpha (0.55f));
+
             g.setFont (10.0f);
-            g.drawText ((db > 0.0f ? "+" : juce::String()) + juce::String (db, 0) + " dB",
-                        (int) plot.getX() + 3, (int) y - 12, 55, 12, juce::Justification::left);
+
+            g.drawText (
+                (db > 0.0f ? "+" : juce::String())
+                    + juce::String (db, 0)
+                    + " dB",
+                static_cast<int> (plot.getX()) + 3,
+                static_cast<int> (y) - 12,
+                55,
+                12,
+                juce::Justification::left);
         }
     }
 
-    // --- Вертикальні лінії долей (синхронізовані з BPM хоста) ---
-    g.setColour (ClipOnizerColours::scopeGrid);
-    const int beatsVisible = juce::jmax (1, (int) std::ceil (beatsOnScreen));
-    for (int b = 0; b <= beatsVisible; ++b)
+    //--------------------------------------------------------------------------
+    // Музична сітка.
+    //
+    // Для 4/4:
+    //
+    // 1 BAR  -> 5 вертикальних ліній
+    // 2 BAR  -> 9
+    // 4 BAR  -> 17
+    // 8 BAR  -> 33
+    //
+    // Лінії кожної чверті.
+    //--------------------------------------------------------------------------
+
+    double quarterNotesPerBar = 4.0;
+
+    if (auto* playHead = processor.getPlayHead())
     {
-        const float x = plot.getX() + (b / (float) beatsVisible) * plot.getWidth();
-        g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
+        if (auto position = playHead->getPosition())
+        {
+            if (auto timeSignature = position->getTimeSignature())
+            {
+                const int numerator =
+                    juce::jmax (1, timeSignature->numerator);
+
+                const int denominator =
+                    juce::jmax (1, timeSignature->denominator);
+
+                quarterNotesPerBar =
+                    static_cast<double> (numerator)
+                    * (4.0 / static_cast<double> (denominator));
+            }
+        }
     }
 
-    // --- Хвиля: для кожної колонки пікселів — min/max семплів у відповідному вікні ---
-    const int widthPx = (int) plot.getWidth();
-    if (widthPx > 0 && samplesToShow > 0)
+    const double totalQuarterNotes =
+        quarterNotesPerBar
+        * static_cast<double> (barsOnScreen);
+
+    const int quarterLineCount =
+        juce::jmax (
+            1,
+            static_cast<int> (
+                std::ceil (totalQuarterNotes)));
+
+    for (int q = 0; q <= quarterLineCount; ++q)
     {
-        const int startIdx = writePos - samplesToShow;
+        const float x =
+            plot.getX()
+            + (static_cast<float> (q)
+               / static_cast<float> (quarterLineCount))
+                * plot.getWidth();
 
-        for (int px = 0; px < widthPx; ++px)
+        // Трохи яскравіші лінії початку такту.
+        const bool isBarLine =
+            std::fmod (
+                static_cast<double> (q),
+                quarterNotesPerBar) < 0.001;
+
+        g.setColour (
+            isBarLine
+                ? ClipOnizerColours::textAmber.withAlpha (0.28f)
+                : ClipOnizerColours::scopeGrid);
+
+        g.drawVerticalLine (
+            static_cast<int> (x),
+            plot.getY(),
+            plot.getBottom());
+    }
+
+    //--------------------------------------------------------------------------
+    // WAVEFORM
+    //
+    // ГОЛОВНА ЗМІНА:
+    //
+    // Немає більше:
+    //
+    //     startIdx = writePos - samplesToShow
+    //
+    // Waveform береться з blockSamples.
+    //
+    // Тому:
+    //
+    // 1 BAR:
+    //
+    //     |================|
+    //     >>>>>>>>>>>>>>>>
+    //
+    // потім:
+    //
+    //     |================|
+    //     >>>>>>>>>>>>>>>>
+    //
+    // Новий блок починається з X = 0.
+    // Ніякого постійного scrolling.
+    //--------------------------------------------------------------------------
+
+    const int widthPx =
+        static_cast<int> (plot.getWidth());
+
+    if (widthPx > 0 && ! blockSamples.empty())
+    {
+        const size_t totalSamples =
+            blockSamples.size();
+
+        //--------------------------------------------------------------------------
+        // Скільки семплів приблизно повинно бути в повному блоці.
+        //
+        // Це використовується ТІЛЬКИ для позиціонування waveform
+        // по ширині.
+        //--------------------------------------------------------------------------
+
+        const double sampleRate =
+            processor.getSampleRate() > 0.0
+                ? processor.getSampleRate()
+                : 44100.0;
+
+        const double samplesPerQuarter =
+            (60.0 / bpm) * sampleRate;
+
+        const double expectedBlockSamples =
+            juce::jmax (
+                1.0,
+                samplesPerQuarter * totalQuarterNotes);
+
+        //--------------------------------------------------------------------------
+        // Малюємо waveform тільки в межах вже записаної частини блоку.
+        //
+        // Тобто waveform НЕ буде розтягнута на весь екран,
+        // поки блок ще не дограв.
+        //--------------------------------------------------------------------------
+
+        const float progress =
+            juce::jlimit (
+                0.0f,
+                1.0f,
+                static_cast<float> (
+                    static_cast<double> (totalSamples)
+                    / expectedBlockSamples));
+
+        const int visibleWidth =
+            juce::jmax (
+                1,
+                static_cast<int> (
+                    progress * static_cast<float> (widthPx)));
+
+        for (int px = 0;
+             px < visibleWidth;
+             ++px)
         {
-            int sIdxA = startIdx + (int) ((px       / (float) widthPx) * samplesToShow);
-            int sIdxB = startIdx + (int) (((px + 1) / (float) widthPx) * samplesToShow);
-            sIdxB = juce::jmax (sIdxB, sIdxA + 1);
+            const size_t sampleA =
+                static_cast<size_t> (
+                    (static_cast<double> (px)
+                     / static_cast<double> (visibleWidth))
+                    * static_cast<double> (totalSamples));
 
-            float minV = 1.0e6f, maxV = -1.0e6f, maxClip = 0.0f;
-            for (int s = sIdxA; s < sIdxB; ++s)
+            size_t sampleB =
+                static_cast<size_t> (
+                    (static_cast<double> (px + 1)
+                     / static_cast<double> (visibleWidth))
+                    * static_cast<double> (totalSamples));
+
+            sampleB =
+                juce::jmax (
+                    sampleB,
+                    sampleA + static_cast<size_t> (1));
+
+            sampleB =
+                juce::jmin (
+                    sampleB,
+                    totalSamples);
+
+            if (sampleA >= totalSamples)
+                continue;
+
+            float minV = 1.0e6f;
+            float maxV = -1.0e6f;
+            float maxClip = 0.0f;
+
+            for (size_t s = sampleA;
+                 s < sampleB;
+                 ++s)
             {
-                const int idx = ((s % bufSize) + bufSize) % bufSize;
-                const auto& samp = processor.scopeBuffer[(size_t) idx];
-                minV = juce::jmin (minV, samp.value);
-                maxV = juce::jmax (maxV, samp.value);
-                maxClip = juce::jmax (maxClip, samp.clipAmount);
+                const auto& sample =
+                    blockSamples[s];
+
+                minV =
+                    juce::jmin (
+                        minV,
+                        sample.value);
+
+                maxV =
+                    juce::jmax (
+                        maxV,
+                        sample.value);
+
+                maxClip =
+                    juce::jmax (
+                        maxClip,
+                        sample.clipAmount);
             }
 
-            const juce::Colour col = maxClip < 0.001f ? ClipOnizerColours::traceNormal
-                                    : (maxClip < 0.85f ? ClipOnizerColours::traceSoftClip
-                                                        : ClipOnizerColours::traceHardClip);
-            g.setColour (col);
+            const juce::Colour waveColour =
+                maxClip < 0.001f
+                    ? ClipOnizerColours::traceNormal
+                    : (maxClip < 0.85f
+                        ? ClipOnizerColours::traceSoftClip
+                        : ClipOnizerColours::traceHardClip);
 
-            const float x = plot.getX() + (float) px;
-            const float yTop = ampToY (maxV);
-            const float yBot = ampToY (minV);
-            g.drawLine (x, yTop, x, juce::jmax (yBot, yTop + 1.0f), 1.0f);
+            g.setColour (waveColour);
+
+            const float x =
+                plot.getX()
+                + (static_cast<float> (px)
+                   / static_cast<float> (widthPx))
+                    * plot.getWidth();
+
+            const float yTop =
+                ampToY (maxV);
+
+            const float yBottom =
+                ampToY (minV);
+
+            g.drawLine (
+                x,
+                yTop,
+                x,
+                juce::jmax (
+                    yBottom,
+                    yTop + 1.0f),
+                1.0f);
         }
     }
 
-    // --- THRESHOLD LINE (спільна з Clip Shaper) ---
-    const float thresholdLin = processor.getThresholdLinear();
-    const float threshY = ampToY (thresholdLin);
-    g.setColour (ClipOnizerColours::thresholdLine);
-    float dash[2] = { 5.0f, 4.0f };
-    g.drawDashedLine (juce::Line<float> (plot.getX(), threshY, plot.getRight(), threshY), dash, 2, 1.5f);
+    //--------------------------------------------------------------------------
+    // THRESHOLD LINE.
+    //--------------------------------------------------------------------------
 
-    const float thresholdDb = juce::Decibels::gainToDecibels (thresholdLin);
-    g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
-    g.drawText ((thresholdDb > 0.0f ? "THRESHOLD +" : "THRESHOLD ") + juce::String (thresholdDb, 1) + " dB",
-                (int) plot.getX(), (int) threshY - 16, 200, 14, juce::Justification::left);
+    const float thresholdLin =
+        processor.getThresholdLinear();
 
-    // --- Підпис аналізатора + рамка ---
-    g.setColour (ClipOnizerColours::textAmber.withAlpha (0.8f));
-    g.setFont (juce::Font (12.0f, juce::Font::bold));
-    g.drawText ("REAL-TIME OSCILLOSCOPE", bounds.removeFromTop (18).toNearestInt(), juce::Justification::centred);
+    const float thresholdY =
+        ampToY (thresholdLin);
 
-    g.setColour (ClipOnizerColours::metalEdge);
-    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 6.0f, 1.5f);
+    g.setColour (
+        ClipOnizerColours::thresholdLine);
+
+    float dash[2] =
+    {
+        5.0f,
+        4.0f
+    };
+
+    g.drawDashedLine (
+        juce::Line<float> (
+            plot.getX(),
+            thresholdY,
+            plot.getRight(),
+            thresholdY),
+        dash,
+        2,
+        1.5f);
+
+    const float thresholdDb =
+        juce::Decibels::gainToDecibels (
+            thresholdLin);
+
+    g.setFont (
+        juce::Font (
+            juce::Font::getDefaultMonospacedFontName(),
+            12.0f,
+            juce::Font::bold));
+
+    g.drawText (
+        (thresholdDb > 0.0f
+            ? "THRESHOLD +"
+            : "THRESHOLD ")
+            + juce::String (thresholdDb, 1)
+            + " dB",
+        static_cast<int> (plot.getX()),
+        static_cast<int> (thresholdY) - 16,
+        200,
+        14,
+        juce::Justification::left);
+
+    //--------------------------------------------------------------------------
+    // Показуємо поточний прогрес блоку.
+    //
+    // Наприклад:
+    //
+    // BAR 3 / 8
+    //
+    // або просто:
+    //
+    // 1 BAR
+    // BPM: 128
+    //
+    //--------------------------------------------------------------------------
+
+    const auto position =
+        getCurrentBlockPosition();
+
+    g.setColour (
+        ClipOnizerColours::textAmber.withAlpha (0.65f));
+
+    g.setFont (
+        juce::Font (
+            juce::Font::getDefaultMonospacedFontName(),
+            10.0f,
+            juce::Font::bold));
+
+    const int percent =
+        ! blockSamples.empty()
+            ? static_cast<int> (
+                juce::jlimit (
+                    0.0,
+                    100.0,
+                    (static_cast<double> (blockSamples.size())
+                     / juce::jmax (
+                         1.0,
+                         (60.0 / bpm)
+                         * processor.getSampleRate()
+                         * totalQuarterNotes))
+                    * 100.0))
+            : 0;
+
+    g.drawText (
+        juce::String (barsOnScreen, 2) + " BAR"
+            + "   " + juce::String (percent) + "%",
+        static_cast<int> (plot.getRight()) - 120,
+        static_cast<int> (plot.getY()) - 17,
+        120,
+        14,
+        juce::Justification::right);
+
+    //--------------------------------------------------------------------------
+    // Header.
+    //--------------------------------------------------------------------------
+
+    g.setColour (
+        ClipOnizerColours::textAmber.withAlpha (0.8f));
+
+    g.setFont (
+        juce::Font (
+            12.0f,
+            juce::Font::bold));
+
+    g.drawText (
+        "REAL-TIME OSCILLOSCOPE",
+        bounds.removeFromTop (18).toNearestInt(),
+        juce::Justification::centred);
+
+    //--------------------------------------------------------------------------
+    // Frame.
+    //--------------------------------------------------------------------------
+
+    g.setColour (
+        ClipOnizerColours::metalEdge);
+
+    g.drawRoundedRectangle (
+        getLocalBounds().toFloat().reduced (1.0f),
+        6.0f,
+        1.5f);
 }
 
 //==============================================================================
@@ -381,7 +992,15 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (ClipOnizerAudioP
     addAndMakeVisible (oscilloscope);
     addAndMakeVisible (clipIndicator);
 
-    const char* labels[6] = { "1/4", "1/2", "1", "2", "4", "8" };
+    const char* labels[6] =
+{
+    "1/4 BAR",
+    "1/2 BAR",
+    "1 BAR",
+    "2 BAR",
+    "4 BAR",
+    "8 BAR"
+};
     for (int i = 0; i < 6; ++i)
     {
         timeScaleButtons[i].setButtonText (labels[i]);

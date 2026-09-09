@@ -16,6 +16,8 @@
 
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include <limits>
+#include <vector>
 
 //==============================================================================
 // Тимчасова "вінтажно-лабораторна" палітра. Коли додаси картинку дизайну,
@@ -66,27 +68,111 @@ private:
 };
 
 //==============================================================================
-// ПРАВИЙ аналізатор: REAL-TIME OSCILLOSCOPE
+// ПРАВИЙ аналізатор: BLOCK-BASED REAL-TIME OSCILLOSCOPE
+//
+// Осцилограф більше НЕ скролиться постійно.
+// Він працює музичними блоками:
+//
+// 1/4 BAR
+// 1/2 BAR
+// 1 BAR
+// 2 BAR
+// 4 BAR
+// 8 BAR
+//
+// Waveform поступово заповнює фіксоване вікно зліва направо.
+// Коли поточний музичний блок закінчується —
+// починається наступний блок.
+//
+// Якщо host не передає PPQ, використовується fallback через BPM.
+//==============================================================================
+
 class OscilloscopeComponent : public juce::Component,
                                private juce::Timer
 {
 public:
     explicit OscilloscopeComponent (ClipOnizerAudioProcessor& p);
+
     void paint (juce::Graphics&) override;
 
-    // Викликається кнопками time-scale (1/4 .. 8) — скільки долей показувати на екрані.
-    void setTimeDivision (float beats) noexcept { beatsOnScreen = beats; }
+    // Кількість тактів, які повинні бути в одному блоці.
+    void setTimeDivision (float bars) noexcept
+    {
+        barsOnScreen = juce::jmax (0.25f, bars);
 
-    // Викликається вертикальним slider'ом праворуч від осцилографа.
-    // ЦЕ ВИКЛЮЧНО ВІЗУАЛЬНИЙ ZOOM — реального аудіо-сигналу не торкається.
-    void setVerticalZoom (float zoom) noexcept { verticalZoom = zoom; }
+        // Новий вибір масштабу = починаємо новий блок.
+        currentBlockId = std::numeric_limits<int64_t>::min();
+        blockSamples.clear();
+        lastCapturedWritePos = processor.scopeWritePos.load (std::memory_order_relaxed);
+    }
+
+    // Вертикальний visual-only zoom.
+    void setVerticalZoom (float zoom) noexcept
+    {
+        verticalZoom = zoom;
+    }
 
 private:
-    void timerCallback() override { repaint(); }
+    //==========================================================================
+    struct BlockPosition
+    {
+        bool valid = false;
+
+        // Номер поточного музичного блоку.
+        int64_t blockId = 0;
+
+        // Позиція всередині поточного блоку в quarter notes.
+        double positionInBlock = 0.0;
+
+        // Повна довжина блоку в quarter notes.
+        double blockLengthInQuarterNotes = 4.0;
+
+        // Поточний BPM.
+        double bpm = 120.0;
+    };
+
+    // Отримуємо позицію DAW.
+    BlockPosition getCurrentBlockPosition();
+
+    // Забираємо нові семпли з processor.scopeBuffer
+    // і додаємо їх у поточний блок.
+    void captureNewSamples();
+
+    // Очищаємо старий блок при переході на наступний.
+    void startNewBlock (int64_t blockId);
+
+    void timerCallback() override
+    {
+        captureNewSamples();
+        repaint();
+    }
 
     ClipOnizerAudioProcessor& processor;
-    float beatsOnScreen = 1.0f;
-    float verticalZoom   = 1.0f;
+
+    // Кількість тактів на екрані.
+    float barsOnScreen = 1.0f;
+
+    // Visual-only vertical zoom.
+    float verticalZoom = 1.0f;
+
+    //==========================================================================
+    // Поточний заблокований waveform.
+    //
+    // ВАЖЛИВО:
+    // Тут зберігається вже не ring-buffer вікно,
+    // а окремий waveform поточного музичного блоку.
+    std::vector<ScopeSample> blockSamples;
+
+    // Остання позиція ring-buffer, яку ми вже забрали.
+    int lastCapturedWritePos = 0;
+
+    // ID поточного музичного блоку.
+    int64_t currentBlockId = std::numeric_limits<int64_t>::min();
+
+    //==========================================================================
+    // Fallback clock, якщо DAW не дає PPQ.
+    double fallbackBeatPosition = 0.0;
+    double fallbackLastTimeSeconds = -1.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OscilloscopeComponent)
 };
