@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(ClipOnizer VERSION 1.0.2)
+project(ClipOnizer VERSION 1.0.3)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,11 +12,11 @@ add_subdirectory("F:/SDK/JUCE" JUCE)
 
 juce_add_plugin(ClipOnizer
     COMPANY_NAME                 "Dr.Doc SoundLab"
-    BUNDLE_ID                    "com.drdoc.modelcliponizer"
+    BUNDLE_ID                    "com.drdoc.cliponizer"
     PLUGIN_MANUFACTURER_CODE     Drdc
     PLUGIN_CODE                  Clp8
     FORMATS                      VST3 AU Standalone
-    PRODUCT_NAME                 "MODEL-CLIPONIZER No.8"
+    PRODUCT_NAME                 "CLIPONIZER No.8"
     IS_SYNTH                     FALSE
     NEEDS_MIDI_INPUT             FALSE
     NEEDS_MIDI_OUTPUT            FALSE
