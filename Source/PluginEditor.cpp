@@ -630,9 +630,6 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
             pixelMaxY.reserve (endPx);
             pixelMinY.reserve (endPx);
 
-            bool blockHasRed = false;
-            bool blockHasYellow = false;
-
             for (int px = 0; px < endPx; ++px)
             {
                 const size_t sampleA = static_cast<size_t> (
@@ -656,8 +653,6 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
 
                 float minV = 1.0e6f;
                 float maxV = -1.0e6f;
-                bool hasYellow = false;
-                bool hasRed = false;
 
                 for (size_t s = sampleA; s < sampleB; ++s)
                 {
@@ -667,62 +662,124 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
 
                     minV = juce::jmin (minV, value);
                     maxV = juce::jmax (maxV, value);
-
-                    if (sample.clipAmount >= 0.85f)
-                        hasRed = true;
-                    else if (sample.clipAmount > 0.001f)
-                        hasYellow = true;
-
-                    if (absValue > thresholdLin)
-                        hasRed = true;
-
-                    if (kneeWidth > 0.0f
-                        && absValue > kneeStart
-                        && absValue <= thresholdLin)
-                    {
-                        hasYellow = true;
-                    }
                 }
 
                 pixelMaxY.push_back (ampToY (maxV));
                 pixelMinY.push_back (ampToY (minV));
-
-                if (hasRed)
-                    blockHasRed = true;
-                else if (hasYellow)
-                    blockHasYellow = true;
             }
 
             if (pixelMaxY.empty())
                 return;
 
-            const juce::Colour baseColour =
-                blockHasRed
-                    ? ClipOnizerColours::traceHardClip
-                    : (blockHasYellow
-                        ? ClipOnizerColours::traceSoftClip
-                        : ClipOnizerColours::traceNormal);
+            // Zone Y positions
+            const float thresholdY     = ampToY (thresholdLin);
+            const float negThresholdY  = ampToY (-thresholdLin);
+            const float kneePosY       = ampToY (kneeStart);
+            const float kneeNegY       = ampToY (-kneeStart);
 
-            const juce::Colour traceColour =
-                faded ? baseColour.withAlpha (0.30f)
-                : baseColour;
-
-            // --- SECOND PASS: build a smooth filled path from the envelope ---
-            juce::Path waveformPath;
             const float plotX  = plot.getX();
             const float scaleX = plot.getWidth() / static_cast<float> (widthPx);
 
-            waveformPath.startNewSubPath (plotX, pixelMaxY[0]);
-            for (size_t i = 1; i < pixelMaxY.size(); ++i)
-                waveformPath.lineTo (plotX + static_cast<float> (i) * scaleX, pixelMaxY[i]);
-            for (size_t i = pixelMinY.size() - 1; i < pixelMinY.size(); --i)
-                waveformPath.lineTo (plotX + static_cast<float> (i) * scaleX, pixelMinY[i]);
-            waveformPath.closeSubPath();
+            const juce::Colour green  (ClipOnizerColours::traceNormal);
+            const juce::Colour orange (ClipOnizerColours::traceSoftClip);
+            const juce::Colour red    (ClipOnizerColours::traceHardClip);
 
-            g.setColour (traceColour.withAlpha (faded ? 0.22f : 0.55f));
-            g.fillPath (waveformPath);
-            g.setColour (traceColour);
-            g.strokePath (waveformPath, juce::PathStrokeType (1.0f));
+            // --- Fill: draw per-zone rectangles clipped to wave extent ---
+            for (size_t i = 0; i < pixelMaxY.size(); ++i)
+            {
+                const float waveTop = pixelMaxY[i];
+                const float waveBot = pixelMinY[i];
+                if (waveTop >= waveBot) continue;
+
+                const float x  = plotX + static_cast<float> (i) * scaleX;
+                const float w  = scaleX + 1.0f;
+                const float a  = faded ? 0.22f : 0.55f;
+
+                // Red zone: above positive threshold
+                {
+                    const float zTop = waveTop;
+                    const float zBot = juce::jmin (waveBot, thresholdY);
+                    if (zTop < zBot)
+                    {
+                        g.setColour (red.withAlpha (a));
+                        g.fillRect (x, zTop, w, zBot - zTop);
+                    }
+                }
+                // Red zone: below negative threshold
+                {
+                    const float zTop = juce::jmax (waveTop, negThresholdY);
+                    const float zBot = waveBot;
+                    if (zTop < zBot)
+                    {
+                        g.setColour (red.withAlpha (a));
+                        g.fillRect (x, zTop, w, zBot - zTop);
+                    }
+                }
+                // Orange zone: between threshold and knee (positive side)
+                {
+                    const float zTop = juce::jmax (waveTop, thresholdY);
+                    const float zBot = juce::jmin (waveBot, kneePosY);
+                    if (zTop < zBot)
+                    {
+                        g.setColour (orange.withAlpha (a));
+                        g.fillRect (x, zTop, w, zBot - zTop);
+                    }
+                }
+                // Orange zone: between threshold and knee (negative side)
+                {
+                    const float zTop = juce::jmax (waveTop, kneeNegY);
+                    const float zBot = juce::jmin (waveBot, negThresholdY);
+                    if (zTop < zBot)
+                    {
+                        g.setColour (orange.withAlpha (a));
+                        g.fillRect (x, zTop, w, zBot - zTop);
+                    }
+                }
+                // Green zone: between the two knee lines
+                {
+                    const float zTop = juce::jmax (waveTop, kneePosY);
+                    const float zBot = juce::jmin (waveBot, kneeNegY);
+                    if (zTop < zBot)
+                    {
+                        g.setColour (green.withAlpha (a));
+                        g.fillRect (x, zTop, w, zBot - zTop);
+                    }
+                }
+            }
+
+            // --- Stroke colour by Y zone ---
+            auto colorByY = [&] (float y) -> juce::Colour
+            {
+                if (y <= thresholdY || y >= negThresholdY)
+                    return red;
+                if (y <= kneePosY || y >= kneeNegY)
+                    return orange;
+                return green;
+            };
+
+            // --- Draw top outline with per-segment colour ---
+            for (size_t i = 1; i < pixelMaxY.size(); ++i)
+            {
+                const float yMid = (pixelMaxY[i - 1] + pixelMaxY[i]) * 0.5f;
+                juce::Colour col = colorByY (yMid);
+                if (faded) col = col.withAlpha (0.30f);
+                g.setColour (col);
+                const float x0 = plotX + static_cast<float> (i - 1) * scaleX;
+                const float x1 = plotX + static_cast<float> (i) * scaleX;
+                g.drawLine (x0, pixelMaxY[i - 1], x1, pixelMaxY[i], 1.0f);
+            }
+
+            // --- Draw bottom outline with per-segment colour ---
+            for (size_t i = 1; i < pixelMinY.size(); ++i)
+            {
+                const float yMid = (pixelMinY[i - 1] + pixelMinY[i]) * 0.5f;
+                juce::Colour col = colorByY (yMid);
+                if (faded) col = col.withAlpha (0.30f);
+                g.setColour (col);
+                const float x0 = plotX + static_cast<float> (i - 1) * scaleX;
+                const float x1 = plotX + static_cast<float> (i) * scaleX;
+                g.drawLine (x0, pixelMinY[i - 1], x1, pixelMinY[i], 1.0f);
+            }
         };
 
         // Попередній (завершений) блок — блідий
