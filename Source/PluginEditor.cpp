@@ -695,23 +695,8 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
                           newVisibleWidth,
                           expectedBlockSamples);
         }
+    }    
         
-        
-        
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
     // Threshold lines
@@ -835,6 +820,8 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
         getLocalBounds().toFloat().reduced (1.0f),
         6.0f, 1.5f);
 }
+
+
 
 //==============================================================================
 // CLIP INDICATOR
