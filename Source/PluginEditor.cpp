@@ -624,6 +624,15 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
             const double totalForMapping =
                 juce::jmax (1.0, referenceTotalSamples);
 
+            // --- FIRST PASS: collect per-pixel envelope (min/max Y) ---
+            std::vector<float> pixelMaxY;
+            std::vector<float> pixelMinY;
+            pixelMaxY.reserve (endPx);
+            pixelMinY.reserve (endPx);
+
+            bool blockHasRed = false;
+            bool blockHasYellow = false;
+
             for (int px = 0; px < endPx; ++px)
             {
                 const size_t sampleA = static_cast<size_t> (
@@ -631,7 +640,12 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
                     * totalForMapping);
 
                 if (sampleA >= availableSamples)
+                {
+                    const float centerY = ampToY (0.0f);
+                    pixelMaxY.push_back (centerY);
+                    pixelMinY.push_back (centerY);
                     continue;
+                }
 
                 size_t sampleB = static_cast<size_t> (
                     (static_cast<double> (px + 1) / static_cast<double> (widthPx))
@@ -642,7 +656,6 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
 
                 float minV = 1.0e6f;
                 float maxV = -1.0e6f;
-
                 bool hasYellow = false;
                 bool hasRed = false;
 
@@ -670,31 +683,46 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
                         hasYellow = true;
                     }
                 }
-                    juce::Colour traceColour;
 
-                    if (hasRed)
-                        traceColour = ClipOnizerColours::traceHardClip;
-                    else if (hasYellow)
-                        traceColour = ClipOnizerColours::traceSoftClip;
-                    else
-                        traceColour = ClipOnizerColours::traceNormal;
+                pixelMaxY.push_back (ampToY (maxV));
+                pixelMinY.push_back (ampToY (minV));
 
-                    if (faded)
-                        traceColour = traceColour.withAlpha (0.35f); // старий блок — блідіший
-
-                    g.setColour (traceColour);
-
-                const float x =
-                    plot.getX()
-                    + static_cast<float> (px)
-                    / static_cast<float> (widthPx)
-                    * plot.getWidth();
-
-                const float y1 = ampToY (minV);
-                const float y2 = ampToY (maxV);
-
-                g.drawLine (x, y1, x, y2, 2.0f);
+                if (hasRed)
+                    blockHasRed = true;
+                else if (hasYellow)
+                    blockHasYellow = true;
             }
+
+            if (pixelMaxY.empty())
+                return;
+
+            const juce::Colour baseColour =
+                blockHasRed
+                    ? ClipOnizerColours::traceHardClip
+                    : (blockHasYellow
+                        ? ClipOnizerColours::traceSoftClip
+                        : ClipOnizerColours::traceNormal);
+
+            const juce::Colour traceColour =
+                faded ? baseColour.withAlpha (0.30f)
+                : baseColour;
+
+            // --- SECOND PASS: build a smooth filled path from the envelope ---
+            juce::Path waveformPath;
+            const float plotX  = plot.getX();
+            const float scaleX = plot.getWidth() / static_cast<float> (widthPx);
+
+            waveformPath.startNewSubPath (plotX, pixelMaxY[0]);
+            for (size_t i = 1; i < pixelMaxY.size(); ++i)
+                waveformPath.lineTo (plotX + static_cast<float> (i) * scaleX, pixelMaxY[i]);
+            for (size_t i = pixelMinY.size() - 1; i < pixelMinY.size(); --i)
+                waveformPath.lineTo (plotX + static_cast<float> (i) * scaleX, pixelMinY[i]);
+            waveformPath.closeSubPath();
+
+            g.setColour (traceColour.withAlpha (faded ? 0.22f : 0.55f));
+            g.fillPath (waveformPath);
+            g.setColour (traceColour);
+            g.strokePath (waveformPath, juce::PathStrokeType (1.0f));
         };
 
         // Попередній (завершений) блок — блідий
