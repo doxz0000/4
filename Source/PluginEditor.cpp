@@ -288,6 +288,25 @@ void OscilloscopeComponent::captureNewSamples()
 
     if (currentBlockId != blockId)
     {
+        // Дописуємо семпли старого блока, які ще не скопійовані
+        // (від lastCapturedCounter до початку нового блока).
+        if (lastCapturedCounter < blockStart)
+        {
+            const int64_t tail = blockStart - lastCapturedCounter;
+
+            for (int64_t n = 0; n < tail; ++n)
+            {
+                const int64_t absoluteIndex = lastCapturedCounter + n;
+                const int index = static_cast<int> (
+                    absoluteIndex % ClipOnizerAudioProcessor::scopeBufferSize);
+
+                blockSamples.push_back (
+                    processor.scopeBuffer[static_cast<size_t> (index)]);
+            }
+
+            lastCapturedCounter = blockStart;
+        }
+
         if (currentBlockId != std::numeric_limits<int64_t>::min()
             && ! blockSamples.empty())
         {
@@ -296,12 +315,9 @@ void OscilloscopeComponent::captureNewSamples()
         }
 
         currentBlockId = blockId;
-
         blockSamples.clear();
-
         lastCapturedCounter = blockStart;
     }
-
     // -------------------------------------------------------------------------
     // COPY NEW SAMPLES
     // -------------------------------------------------------------------------
@@ -580,10 +596,11 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
         
         
         
-                auto drawWaveform =
-            [&] (const std::vector<ScopeSample>& samples,
-                 int endPx,
-                 double referenceTotalSamples)
+            auto drawWaveform =
+                [&] (const std::vector<ScopeSample>& samples,
+                    int endPx,
+                    double referenceTotalSamples,
+                    bool faded)
         {
             if (samples.empty())
                 return;
@@ -653,17 +670,19 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
                         hasYellow = true;
                     }
                 }
+                    juce::Colour traceColour;
 
-                juce::Colour traceColour;
+                    if (hasRed)
+                        traceColour = ClipOnizerColours::traceHardClip;
+                    else if (hasYellow)
+                        traceColour = ClipOnizerColours::traceSoftClip;
+                    else
+                        traceColour = ClipOnizerColours::traceNormal;
 
-                if (hasRed)
-                    traceColour = ClipOnizerColours::traceHardClip;
-                else if (hasYellow)
-                    traceColour = ClipOnizerColours::traceSoftClip;
-                else
-                    traceColour = ClipOnizerColours::traceNormal;
+                    if (faded)
+                        traceColour = traceColour.withAlpha (0.35f); // старий блок — блідіший
 
-                g.setColour (traceColour);
+                    g.setColour (traceColour);
 
                 const float x =
                     plot.getX()
@@ -678,22 +697,22 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
             }
         };
 
-        // 1. Предыдущий (уже завершённый и неизменный) блок — рисуем
-        //    на всю ширину, используя его собственный (статичный) размер.
+        // Попередній (завершений) блок — блідий
         if (! previousBlockSamples.empty())
         {
             drawWaveform (previousBlockSamples,
-                          widthPx,
-                          static_cast<double> (previousBlockSamples.size()));
+                        widthPx,
+                        expectedBlockSamples,   // той самий референс, що й сітка/новий блок
+                        true);                  // faded (див. Проблему 1)
         }
 
-        // 2. Новый (ещё заполняющийся) блок — рисуем поверх, используя
-        //    ФИКСИРОВАННЫЙ expectedBlockSamples как референс.
+        // Новий (поточний) блок — яскравий
         if (newVisibleWidth > 0 && ! blockSamples.empty())
         {
             drawWaveform (blockSamples,
-                          newVisibleWidth,
-                          expectedBlockSamples);
+                        newVisibleWidth,
+                        expectedBlockSamples,
+                        false);
         }
     }    
         
