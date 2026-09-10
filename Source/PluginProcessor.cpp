@@ -72,6 +72,8 @@ void ClipOnizerAudioProcessor::prepareToPlay (double sampleRate, int)
     currentQuarterNotesPerBar.store (4.0, std::memory_order_release);
 
     fallbackPpq = 0.0;
+    scopeLoopPreviousPpq = 0.0;
+    scopeLoopPreviousIsLooping = false;
     lastScopeConfigVersion =
         oscilloscopeConfigVersion.load (std::memory_order_acquire);
 
@@ -128,8 +130,7 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     bool isLooping = false;
     double loopStart = 0.0;
     double loopEnd = 0.0;
-    static thread_local double previousPpq = 0.0;
-    static thread_local bool previousLooping = false;
+  
 
     if (auto* hostPlayHead = getPlayHead())
     {
@@ -210,10 +211,10 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         // Detect that the DAW has jumped back to the beginning
         // of the loop.
-        if (previousLooping
-            && previousPpq >= loopStart
-            && previousPpq < loopEnd
-            && ppq < previousPpq)
+       if (scopeLoopPreviousIsLooping
+            && scopeLoopPreviousPpq >= loopStart
+            && scopeLoopPreviousPpq < loopEnd
+            && ppq < scopeLoopPreviousPpq)
         {
             scopeLoopCycle.fetch_add (
                 1,
@@ -261,8 +262,8 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
               * blockLengthQN;
     }
 
-    previousPpq = ppq;
-    previousLooping = isLooping;
+    scopeLoopPreviousPpq = ppq;
+    scopeLoopPreviousIsLooping = isLooping;
 };
 
 

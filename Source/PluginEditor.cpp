@@ -577,58 +577,51 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
                     progress
                     * static_cast<float> (widthPx)));
 
-        // ---------------------------------------------------------------------
-        // HELPER: draw one waveform.
-        // ---------------------------------------------------------------------
-
-        auto drawWaveform =
+        
+        
+        
+                auto drawWaveform =
             [&] (const std::vector<ScopeSample>& samples,
-                 int startPx,
-                 int endPx)
+                 int endPx,
+                 double referenceTotalSamples)
         {
             if (samples.empty())
                 return;
 
-            if (startPx >= endPx)
+            if (endPx <= 0)
                 return;
 
-            const int drawWidth =
-                endPx - startPx;
+            const size_t availableSamples = samples.size();
 
-            const size_t totalSamples =
-                samples.size();
+            // ВАЖНО: маппинг пиксель -> сэмпл всегда идёт от ФИКСИРОВАННОГО
+            // референсного количества сэмплов (ожидаемая длина всего
+            // музыкального блока), а НЕ от samples.size().
+            //
+            // samples.size() растёт каждый кадр, пока блок ещё пишется,
+            // из-за этого раньше пересчитывался масштаб на каждый repaint —
+            // это и давало эффект "плывёт/сжимается", а потом
+            // "устаканивается", а также мелкий дрейф волны относительно
+            // сетки на каждом проходе. С фиксированным референсом
+            // пиксель X с первого кадра соответствует одному и тому же
+            // абсолютному сэмплу от начала блока и никогда не смещается.
+            const double totalForMapping =
+                juce::jmax (1.0, referenceTotalSamples);
 
-            for (int px = startPx;
-                 px < endPx;
-                 ++px)
+            for (int px = 0; px < endPx; ++px)
             {
-                const int localPx =
-                    px - startPx;
+                const size_t sampleA = static_cast<size_t> (
+                    (static_cast<double> (px) / static_cast<double> (widthPx))
+                    * totalForMapping);
 
-                const size_t sampleA =
-                    static_cast<size_t> (
-                        (static_cast<double> (localPx)
-                         / static_cast<double> (drawWidth))
-                        * static_cast<double> (totalSamples));
-
-                size_t sampleB =
-                    static_cast<size_t> (
-                        (static_cast<double> (localPx + 1)
-                         / static_cast<double> (drawWidth))
-                        * static_cast<double> (totalSamples));
-
-                sampleB =
-                    juce::jmax (
-                        sampleB,
-                        sampleA + static_cast<size_t> (1));
-
-                sampleB =
-                    juce::jmin (
-                        sampleB,
-                        totalSamples);
-
-                if (sampleA >= totalSamples)
+                if (sampleA >= availableSamples)
                     continue;
+
+                size_t sampleB = static_cast<size_t> (
+                    (static_cast<double> (px + 1) / static_cast<double> (widthPx))
+                    * totalForMapping);
+
+                sampleB = juce::jmax (sampleB, sampleA + static_cast<size_t> (1));
+                sampleB = juce::jmin (sampleB, availableSamples);
 
                 float minV = 1.0e6f;
                 float maxV = -1.0e6f;
@@ -636,40 +629,20 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
                 bool hasYellow = false;
                 bool hasRed = false;
 
-                for (size_t s = sampleA;
-                     s < sampleB;
-                     ++s)
+                for (size_t s = sampleA; s < sampleB; ++s)
                 {
-                    const auto& sample =
-                        samples[s];
+                    const auto& sample = samples[s];
+                    const float value = sample.value;
+                    const float absValue = std::abs (value);
 
-                    const float value =
-                        sample.value;
+                    minV = juce::jmin (minV, value);
+                    maxV = juce::jmax (maxV, value);
 
-                    const float absValue =
-                        std::abs (value);
-
-                    minV =
-                        juce::jmin (
-                            minV,
-                            value);
-
-                    maxV =
-                        juce::jmax (
-                            maxV,
-                            value);
-
-                    // clipAmount is calculated by
-                    // the audio thread and stored
-                    // in the ScopeSample.
                     if (sample.clipAmount >= 0.85f)
                         hasRed = true;
                     else if (sample.clipAmount > 0.001f)
                         hasYellow = true;
 
-                    // Additional protection:
-                    // values physically above threshold
-                    // are always considered clipped.
                     if (absValue > thresholdLin)
                         hasRed = true;
 
@@ -684,20 +657,11 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
                 juce::Colour traceColour;
 
                 if (hasRed)
-                {
-                    traceColour =
-                        ClipOnizerColours::traceHardClip;
-                }
+                    traceColour = ClipOnizerColours::traceHardClip;
                 else if (hasYellow)
-                {
-                    traceColour =
-                        ClipOnizerColours::traceSoftClip;
-                }
+                    traceColour = ClipOnizerColours::traceSoftClip;
                 else
-                {
-                    traceColour =
-                        ClipOnizerColours::traceNormal;
-                }
+                    traceColour = ClipOnizerColours::traceNormal;
 
                 g.setColour (traceColour);
 
@@ -707,48 +671,34 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
                     / static_cast<float> (widthPx)
                     * plot.getWidth();
 
-                const float y1 =
-                    ampToY (minV);
+                const float y1 = ampToY (minV);
+                const float y2 = ampToY (maxV);
 
-                const float y2 =
-                    ampToY (maxV);
-
-                g.drawLine (
-                    x,
-                    y1,
-                    x,
-                    y2,
-                    2.0f);
+                g.drawLine (x, y1, x, y2, 2.0f);
             }
         };
 
-        // ---------------------------------------------------------------------
-        // 1. Draw PREVIOUS block over the complete display.
-        // ---------------------------------------------------------------------
-
+        // 1. Предыдущий (уже завершённый и неизменный) блок — рисуем
+        //    на всю ширину, используя его собственный (статичный) размер.
         if (! previousBlockSamples.empty())
         {
-            drawWaveform (
-                previousBlockSamples,
-                0,
-                widthPx);
+            drawWaveform (previousBlockSamples,
+                          widthPx,
+                          static_cast<double> (previousBlockSamples.size()));
         }
 
-        // ---------------------------------------------------------------------
-        // 2. Draw NEW block over the previous block.
-        //
-        // This is the actual overwrite.
-        // ---------------------------------------------------------------------
-
-        if (newVisibleWidth > 0
-            && ! blockSamples.empty())
+        // 2. Новый (ещё заполняющийся) блок — рисуем поверх, используя
+        //    ФИКСИРОВАННЫЙ expectedBlockSamples как референс.
+        if (newVisibleWidth > 0 && ! blockSamples.empty())
         {
-            drawWaveform (
-                blockSamples,
-                0,
-                newVisibleWidth);
+            drawWaveform (blockSamples,
+                          newVisibleWidth,
+                          expectedBlockSamples);
         }
-    }
+        
+        
+        
+
 
 
 

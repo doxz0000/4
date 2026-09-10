@@ -139,5 +139,14 @@ private:
     float clipEnvelope = 0.0f;
     uint32_t lastScopeConfigVersion = 0;
 
+     float clipEnvelope = 0.0f;
+    uint32_t lastScopeConfigVersion = 0;
+
+    // Состояние детектора луп-цикла — ДОЛЖНО быть per-instance,
+    // а не static thread_local (иначе несколько инстансов плагина
+    // на одном аудио-потоке будут ломать друг другу loop-detection).
+    double scopeLoopPreviousPpq = 0.0;
+    bool scopeLoopPreviousIsLooping = false;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipOnizerAudioProcessor)
 };
