@@ -145,9 +145,9 @@ void ClipShaperComponent::paint (juce::Graphics& g)
 
     const float thresholdDb = juce::Decibels::gainToDecibels (thresholdLin);
 
-    g.setFont (juce::Font (
-        juce::Font::getDefaultMonospacedFontName(), 12.0f,
-        juce::Font::bold));
+    g.setFont (juce::Font (juce::FontOptions (
+    juce::Font::getDefaultMonospacedFontName(), 12.0f,
+    juce::Font::bold)));
 
     g.drawText (
         (thresholdDb > 0.0f ? "THRESHOLD +" : "THRESHOLD ")
@@ -191,7 +191,7 @@ void ClipShaperComponent::paint (juce::Graphics& g)
     g.drawEllipse (dotPx - 4.5f, dotPy - 4.5f, 9.0f, 9.0f, 1.0f);
 
     g.setColour (ClipOnizerColours::textAmber.withAlpha (0.8f));
-    g.setFont (juce::Font (12.0f, juce::Font::bold));
+    g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
     g.drawText ("CLIP SHAPER",
                 bounds.removeFromTop (18).toNearestInt(),
                 juce::Justification::centred);
@@ -759,9 +759,9 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
     const float thresholdDb =
         juce::Decibels::gainToDecibels (thresholdLin);
 
-    g.setFont (juce::Font (
-        juce::Font::getDefaultMonospacedFontName(),
-        12.0f, juce::Font::bold));
+g.setFont (juce::Font (juce::FontOptions (
+    juce::Font::getDefaultMonospacedFontName(),
+    12.0f, juce::Font::bold)));
 
     g.setColour (ClipOnizerColours::thresholdLine);
 
@@ -792,9 +792,9 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
     g.setColour (
         ClipOnizerColours::textAmber.withAlpha (0.65f));
 
-    g.setFont (juce::Font (
-        juce::Font::getDefaultMonospacedFontName(),
-        10.0f, juce::Font::bold));
+   g.setFont (juce::Font (juce::FontOptions (
+    juce::Font::getDefaultMonospacedFontName(),
+    10.0f, juce::Font::bold)));
 
     g.drawText (
         juce::String (barsOnScreen, 2) + " BAR   "
@@ -807,7 +807,7 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
     g.setColour (
         ClipOnizerColours::textAmber.withAlpha (0.8f));
 
-    g.setFont (juce::Font (12.0f, juce::Font::bold));
+    g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
 
     g.drawText (
         "REAL-TIME OSCILLOSCOPE",
@@ -884,7 +884,7 @@ void ClipIndicatorComponent::paint (juce::Graphics& g)
     g.drawEllipse (ledArea, 1.5f);
 
     g.setColour (ClipOnizerColours::textAmber);
-    g.setFont (juce::Font (10.0f, juce::Font::bold));
+    g.setFont (juce::Font (juce::FontOptions (10.0f, juce::Font::bold)));
     g.drawText (
         "CLIP",
         bounds.removeFromBottom (14.0f).toNearestInt(),
@@ -926,7 +926,7 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
 
         l.setText (text, juce::dontSendNotification);
         l.setJustificationType (juce::Justification::centred);
-        l.setFont (juce::Font (13.0f, juce::Font::bold));
+        l.setFont (juce::Font (juce::FontOptions (13.0f, juce::Font::bold)));
 
         addAndMakeVisible (l);
     };
@@ -1008,9 +1008,9 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
         juce::Justification::centredRight);
 
     bpmLabel.setFont (
-        juce::Font (
-            juce::Font::getDefaultMonospacedFontName(),
-            13.0f, juce::Font::bold));
+    juce::Font (juce::FontOptions (
+        juce::Font::getDefaultMonospacedFontName(),
+        13.0f, juce::Font::bold)));
 
     addAndMakeVisible (bpmLabel);
 
@@ -1036,8 +1036,8 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
         "MODEL-CLIPONIZER No.8",
         juce::dontSendNotification);
 
-    modelLabel.setFont (
-        juce::Font (17.0f, juce::Font::bold));
+  modelLabel.setFont (
+    juce::Font (juce::FontOptions (17.0f, juce::Font::bold)));
 
     modelLabel.setJustificationType (
         juce::Justification::centred);
@@ -1048,7 +1048,7 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
         "DR.DOC SOUNDLAB-EQUIPMENT",
         juce::dontSendNotification);
 
-    subtitleLabel.setFont (juce::Font (11.0f));
+    subtitleLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     subtitleLabel.setJustificationType (
         juce::Justification::centred);
 
@@ -1058,8 +1058,8 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
         "CLIP-TO-ZERO   /   NO LATENCY CLIPPER",
         juce::dontSendNotification);
 
-    titleLabel.setFont (
-        juce::Font (13.0f, juce::Font::italic));
+   titleLabel.setFont (
+    juce::Font (juce::FontOptions (13.0f, juce::Font::italic)));
 
     titleLabel.setJustificationType (
         juce::Justification::centred);
