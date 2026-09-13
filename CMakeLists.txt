@@ -28,6 +28,12 @@ juce_add_plugin(ClipOnizer
 # Генеруємо JuceHeader.h для компіляції проєкту
 juce_generate_juce_header(ClipOnizer)
 
+# Додаємо бінарні дані (зображення)
+juce_add_binary_data(ClipOnizerResources
+    SOURCES
+        Resources/background.png
+)
+
 target_sources(ClipOnizer
     PRIVATE
         Source/PluginProcessor.cpp
@@ -51,6 +57,7 @@ target_link_libraries(ClipOnizer
     PRIVATE
         juce::juce_audio_utils
         juce::juce_dsp
+        ClipOnizerResources
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags

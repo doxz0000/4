@@ -169,5 +169,7 @@ private:
 
     juce::Label modelLabel, subtitleLabel, titleLabel;
 
+    juce::Image backgroundImage;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipOnizerAudioProcessorEditor)
 };

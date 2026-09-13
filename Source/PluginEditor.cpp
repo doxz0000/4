@@ -5,6 +5,7 @@
 
 #include "PluginEditor.h"
 #include <cmath>
+#include "BinaryData.h"
 
 //==============================================================================
 // LOOK AND FEEL
@@ -34,24 +35,23 @@ void ClipOnizerLookAndFeel::drawRotarySlider (
     const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
 
     juce::ColourGradient metalGrad (
-        ClipOnizerColours::panelLight, centre.x, centre.y - radius,
-        ClipOnizerColours::panelDark, centre.x, centre.y + radius, false);
+    ClipOnizerColours::panelLight, centre.x, centre.y - radius,
+    ClipOnizerColours::panelDark, centre.x, centre.y + radius, false);
 
     g.setGradientFill (metalGrad);
     g.fillEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f);
 
     g.setColour (ClipOnizerColours::metalEdge);
     g.drawEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f, 1.5f);
+   
 
     juce::Path arcTrack;
-    arcTrack.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f,
-                            rotaryStartAngle, rotaryEndAngle, true);
+    arcTrack.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f, rotaryStartAngle, rotaryEndAngle, true);
     g.setColour (ClipOnizerColours::metalEdge.darker (0.4f));
     g.strokePath (arcTrack, juce::PathStrokeType (2.5f));
 
     juce::Path arcValue;
-    arcValue.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f,
-                            rotaryStartAngle, angle, true);
+    arcValue.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f, rotaryStartAngle, angle, true);
     g.setColour (ClipOnizerColours::traceSoftClip);
     g.strokePath (arcValue, juce::PathStrokeType (2.5f));
 
@@ -1316,9 +1316,12 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
 
     addAndMakeVisible (titleLabel);
 
+    // Завантажуємо фонове зображення з бінарних даних
+    backgroundImage = juce::ImageCache::getFromMemory(BinaryData::background_png, BinaryData::background_pngSize);
+
     setResizable (true, true);
-    setResizeLimits (900, 560, 1800, 1100);
-    setSize (1180, 720);
+    setResizeLimits (980, 660, 1800, 1100); // Розміри плагіна
+    setSize (980, 660);
 
     startTimerHz (10);
 }
@@ -1352,13 +1355,21 @@ void ClipOnizerAudioProcessorEditor::timeScaleButtonClicked (int index)
 //==============================================================================
 void ClipOnizerAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    juce::ColourGradient bg (
-        ClipOnizerColours::panelLight, 0.0f, 0.0f,
-        ClipOnizerColours::panelDark, 0.0f,
-        static_cast<float> (getHeight()), false);
+    // Малюємо фонове зображення або градієнт як резерв
+    if (backgroundImage.isValid())
+    {
+        g.drawImage(backgroundImage, getLocalBounds().toFloat());
+    }
+    else
+    {
+        juce::ColourGradient bg (
+            ClipOnizerColours::panelLight, 0.0f, 0.0f,
+            ClipOnizerColours::panelDark, 0.0f,
+            static_cast<float> (getHeight()), false);
 
-    g.setGradientFill (bg);
-    g.fillAll();
+        g.setGradientFill (bg);
+        g.fillAll();
+    }
 
     g.setColour (ClipOnizerColours::metalEdge);
     g.drawRect (getLocalBounds(), 2);
