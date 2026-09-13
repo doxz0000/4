@@ -95,39 +95,50 @@ void ClipShaperComponent::paint (juce::Graphics& g)
     const float effectiveRange =
         juce::jmax (0.05f, baseRange / juce::jmax (0.1f, verticalZoom));
 
-    // Осцилоскоп ділить висоту навпіл (симетрично: -range..+range),
-    // а шейпер малює тільки 0..maxAmp на всю висоту.
-    // Щоб швидкість зміни масштабу була однаковою — множимо на 2.
+    // Діапазон, в межах якого рахуємо криву (щоб коліно/поріг завжди влазили).
     const float maxAmp = effectiveRange * 2.0f;
 
-    auto ampToNorm = [maxAmp] (float amp)
+    // Центрований мапінг Y (як в осцилоскопі): 0 амплітуди = середина екрана.
+    auto ampToY = [&] (float amp)
     {
-        return juce::jlimit (0.0f, 1.0f, amp / maxAmp);
+        const float norm = juce::jlimit (-1.0f, 1.0f, amp / effectiveRange);
+        return plot.getCentreY() - norm * (plot.getHeight() * 0.5f);
     };
 
-
+    // Центрований мапінг X: вхідний сигнал теж симетричний відносно центра.
+    auto ampToX = [&] (float amp)
+    {
+        const float norm = juce::jlimit (-1.0f, 1.0f, amp / effectiveRange);
+        return plot.getCentreX() + norm * (plot.getWidth() * 0.5f);
+    };
 
     g.setColour (ClipOnizerColours::scopeGrid);
 
     for (float db : { -24.0f, -12.0f, -6.0f, 0.0f, 6.0f })
     {
-        const float norm = ampToNorm (juce::Decibels::decibelsToGain (db));
-        const float x = plot.getX() + norm * plot.getWidth();
-        const float y = plot.getBottom() - norm * plot.getHeight();
+        const float gain = juce::Decibels::decibelsToGain (db);
 
-        g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
-        g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
+        const float xPos = ampToX (gain);
+        const float xNeg = ampToX (-gain);
+        const float yPos = ampToY (gain);
+        const float yNeg = ampToY (-gain);
+
+        g.drawVerticalLine ((int) xPos, plot.getY(), plot.getBottom());
+        g.drawVerticalLine ((int) xNeg, plot.getY(), plot.getBottom());
+        g.drawHorizontalLine ((int) yPos, plot.getX(), plot.getRight());
+        g.drawHorizontalLine ((int) yNeg, plot.getX(), plot.getRight());
     }
 
+    // Діагональ unity-gain: кути plot відповідають (-max,-max) і (+max,+max).
     g.setColour (ClipOnizerColours::traceNormal.withAlpha (0.3f));
     g.drawLine (plot.getX(), plot.getBottom(), plot.getRight(), plot.getY(), 1.0f);
 
-    constexpr int steps = 200;
+    constexpr int steps = 400;
 
     for (int i = 0; i < steps; ++i)
     {
-        const float xAmpA = (i / (float) steps) * maxAmp;
-        const float xAmpB = ((i + 1) / (float) steps) * maxAmp;
+        const float xAmpA = -maxAmp + (i       / (float) steps) * (2.0f * maxAmp);
+        const float xAmpB = -maxAmp + ((i + 1) / (float) steps) * (2.0f * maxAmp);
 
         const auto rA = ClipShaper::process (xAmpA, thresholdLin, knee01);
         const auto rB = ClipShaper::process (xAmpB, thresholdLin, knee01);
@@ -139,37 +150,43 @@ void ClipShaperComponent::paint (juce::Graphics& g)
 
         g.setColour (segColour);
 
-        const float pxA = plot.getX() + ampToNorm (xAmpA) * plot.getWidth();
-        const float pxB = plot.getX() + ampToNorm (xAmpB) * plot.getWidth();
-        const float pyA = plot.getBottom() - ampToNorm (rA.first) * plot.getHeight();
-        const float pyB = plot.getBottom() - ampToNorm (rB.first) * plot.getHeight();
+        const float pxA = ampToX (xAmpA);
+        const float pxB = ampToX (xAmpB);
+        const float pyA = ampToY (rA.first);
+        const float pyB = ampToY (rB.first);
 
         g.drawLine (pxA, pyA, pxB, pyB, 2.2f);
     }
 
-    const float threshY =
-        plot.getBottom() - ampToNorm (thresholdLin) * plot.getHeight();
+    // Поріг: додатна і від'ємна лінії.
+    const float threshYPos = ampToY (thresholdLin);
+    const float threshYNeg = ampToY (-thresholdLin);
 
     g.setColour (ClipOnizerColours::thresholdLine);
 
     float dash[2] = { 5.0f, 4.0f };
 
     g.drawDashedLine (
-        juce::Line<float> (plot.getX(), threshY, plot.getRight(), threshY),
+        juce::Line<float> (plot.getX(), threshYPos, plot.getRight(), threshYPos),
+        dash, 2, 1.2f);
+
+    g.drawDashedLine (
+        juce::Line<float> (plot.getX(), threshYNeg, plot.getRight(), threshYNeg),
         dash, 2, 1.2f);
 
     const float thresholdDb = juce::Decibels::gainToDecibels (thresholdLin);
 
     g.setFont (juce::Font (juce::FontOptions (
-    juce::Font::getDefaultMonospacedFontName(), 12.0f,
-    juce::Font::bold)));
+        juce::Font::getDefaultMonospacedFontName(), 12.0f,
+        juce::Font::bold)));
 
     g.drawText (
         (thresholdDb > 0.0f ? "THRESHOLD +" : "THRESHOLD ")
         + juce::String (thresholdDb, 1) + " dB",
-        (int) plot.getX(), (int) threshY - 16, 200, 14,
+        (int) plot.getX(), (int) threshYPos - 16, 200, 14,
         juce::Justification::left);
 
+    // Жива точка: тепер бере ЗНАКОВЕ значення, а не abs(), бо графік симетричний.
     const int64_t writeCounter =
         processor.scopeWriteCounter.load (std::memory_order_acquire);
 
@@ -180,7 +197,7 @@ void ClipShaperComponent::paint (juce::Graphics& g)
 
     const float liveAmp =
         writeCounter > 0
-            ? std::abs (processor.scopeBuffer[(size_t) lastIdx].value)
+            ? processor.scopeBuffer[(size_t) lastIdx].value
             : 0.0f;
 
     liveDotSmoothed += (liveAmp - liveDotSmoothed) * 0.25f;
@@ -188,11 +205,8 @@ void ClipShaperComponent::paint (juce::Graphics& g)
     const auto dotResult =
         ClipShaper::process (liveDotSmoothed, thresholdLin, knee01);
 
-    const float dotPx =
-        plot.getX() + ampToNorm (liveDotSmoothed) * plot.getWidth();
-
-    const float dotPy =
-        plot.getBottom() - ampToNorm (dotResult.first) * plot.getHeight();
+    const float dotPx = ampToX (liveDotSmoothed);
+    const float dotPy = ampToY (dotResult.first);
 
     const juce::Colour dotColour =
         dotResult.second < 0.001f ? ClipOnizerColours::traceNormal
