@@ -142,6 +142,8 @@ private:
     float livePeakPosEnvelope = 0.0f;
     float livePeakNegEnvelope = 0.0f;
     uint32_t lastScopeConfigVersion = 0;
+    int livePeakPosHoldCounter = 0;
+    int livePeakNegHoldCounter = 0;
 
     // Состояние детектора луп-цикла — ДОЛЖНО быть per-instance,
     // а не static thread_local (иначе несколько инстансов плагина

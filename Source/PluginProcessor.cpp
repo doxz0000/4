@@ -404,15 +404,37 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     clipIndicatorLevel.store (clipEnvelope, std::memory_order_release);
 
     // --- нове: peak-envelope для точки Clip Shaper ---
-    constexpr float liveAttack  = 0.5f;
-    constexpr float liveRelease = 0.05f;
+    constexpr float liveRelease = 0.02f;
+    constexpr int holdBlocks = 25;   // сколько вызовов processBlock держать пик (подбери по ощущениям)
 
-    const float posCoeff = blockPeakPos > livePeakPosEnvelope ? liveAttack : liveRelease;
-    livePeakPosEnvelope += (blockPeakPos - livePeakPosEnvelope) * posCoeff;
+    if (blockPeakPos >= livePeakPosEnvelope)
+    {
+        livePeakPosEnvelope = blockPeakPos;
+        livePeakPosHoldCounter = holdBlocks;
+    }
+    else if (livePeakPosHoldCounter > 0)
+    {
+        --livePeakPosHoldCounter;
+    }
+    else
+    {
+        livePeakPosEnvelope += (blockPeakPos - livePeakPosEnvelope) * liveRelease;
+    }
     scopeLivePeakPos.store (livePeakPosEnvelope, std::memory_order_release);
 
-    const float negCoeff = blockPeakNeg < livePeakNegEnvelope ? liveAttack : liveRelease;
-    livePeakNegEnvelope += (blockPeakNeg - livePeakNegEnvelope) * negCoeff;
+    if (blockPeakNeg <= livePeakNegEnvelope)
+    {
+        livePeakNegEnvelope = blockPeakNeg;
+        livePeakNegHoldCounter = holdBlocks;
+    }
+    else if (livePeakNegHoldCounter > 0)
+    {
+        --livePeakNegHoldCounter;
+    }
+    else
+    {
+        livePeakNegEnvelope += (blockPeakNeg - livePeakNegEnvelope) * liveRelease;
+    }
     scopeLivePeakNeg.store (livePeakNegEnvelope, std::memory_order_release);
 
 }

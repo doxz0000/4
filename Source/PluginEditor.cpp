@@ -189,8 +189,8 @@ void ClipShaperComponent::paint (juce::Graphics& g)
     const float livePeakPos = processor.scopeLivePeakPos.load (std::memory_order_acquire);
     const float livePeakNeg = processor.scopeLivePeakNeg.load (std::memory_order_acquire);
 
-    liveDotPosSmoothed += (livePeakPos - liveDotPosSmoothed) * 0.25f;
-    liveDotNegSmoothed += (livePeakNeg - liveDotNegSmoothed) * 0.25f;
+    liveDotPosSmoothed += (livePeakPos - liveDotPosSmoothed) * 0.6f;
+    liveDotNegSmoothed += (livePeakNeg - liveDotNegSmoothed) * 0.6f;
 
     auto drawLiveDot = [&] (float amp)
     {
