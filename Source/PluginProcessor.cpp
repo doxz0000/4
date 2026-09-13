@@ -405,7 +405,7 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // --- нове: peak-envelope для точки Clip Shaper ---
     constexpr float liveRelease = 0.02f;
-    constexpr int holdBlocks = 25;   // сколько вызовов processBlock держать пик (подбери по ощущениям)
+    constexpr int holdBlocks = 1;   // сколько вызовов processBlock держать пик (подбери по ощущениям)
 
     if (blockPeakPos >= livePeakPosEnvelope)
     {
