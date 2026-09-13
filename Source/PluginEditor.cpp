@@ -1143,6 +1143,7 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
         juce::Slider::LinearVertical);
 
     verticalZoomSlider.setRange (0.2, 4.0, 0.01);
+    verticalZoomSlider.setDoubleClickReturnValue (true, 1.0);   // <-- ДОДАТИ
     verticalZoomSlider.setValue (1.0);
     verticalZoomSlider.setTextBoxStyle (
         juce::Slider::NoTextBox, false, 0, 0);
