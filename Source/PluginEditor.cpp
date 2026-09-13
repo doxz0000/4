@@ -186,22 +186,30 @@ void ClipShaperComponent::paint (juce::Graphics& g)
         (int) plot.getX(), (int) threshYPos - 16, 200, 14,
         juce::Justification::left);
 
-        const float liveAmp = processor.scopeLiveAmplitude.load (std::memory_order_acquire);
-        liveDotSmoothed += (liveAmp - liveDotSmoothed) * 0.25f;
+    const float livePeakPos = processor.scopeLivePeakPos.load (std::memory_order_acquire);
+    const float livePeakNeg = processor.scopeLivePeakNeg.load (std::memory_order_acquire);
 
-    const auto dotResult = ClipShaper::process (liveDotSmoothed, thresholdLin, knee01);
-    const float dotPx = ampToX (liveDotSmoothed);
-    const float dotPy = ampToY (dotResult.first);
-    const juce::Colour dotColour =
-        dotResult.second < 0.001f ? ClipOnizerColours::traceNormal
-        : (dotResult.second < 0.85f ? ClipOnizerColours::traceSoftClip
-                                    : ClipOnizerColours::traceHardClip);
+    liveDotPosSmoothed += (livePeakPos - liveDotPosSmoothed) * 0.25f;
+    liveDotNegSmoothed += (livePeakNeg - liveDotNegSmoothed) * 0.25f;
 
-    g.setColour (dotColour);
-    g.fillEllipse (dotPx - 4.5f, dotPy - 4.5f, 9.0f, 9.0f);
+    auto drawLiveDot = [&] (float amp)
+    {
+        const auto dotResult = ClipShaper::process (amp, thresholdLin, knee01);
+        const float dotPx = ampToX (amp);
+        const float dotPy = ampToY (dotResult.first);
+        const juce::Colour dotColour =
+            dotResult.second < 0.001f ? ClipOnizerColours::traceNormal
+            : (dotResult.second < 0.85f ? ClipOnizerColours::traceSoftClip
+                                         : ClipOnizerColours::traceHardClip);
 
-    g.setColour (juce::Colours::white.withAlpha (0.6f));
-    g.drawEllipse (dotPx - 4.5f, dotPy - 4.5f, 9.0f, 9.0f, 1.0f);
+        g.setColour (dotColour);
+        g.fillEllipse (dotPx - 4.5f, dotPy - 4.5f, 9.0f, 9.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.6f));
+        g.drawEllipse (dotPx - 4.5f, dotPy - 4.5f, 9.0f, 9.0f, 1.0f);
+    };
+
+    drawLiveDot (liveDotPosSmoothed);
+    drawLiveDot (liveDotNegSmoothed);
 
     g.setColour (ClipOnizerColours::textAmber.withAlpha (0.8f));
     g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));

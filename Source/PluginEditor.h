@@ -48,7 +48,8 @@ private:
     void timerCallback() override { repaint(); }
 
     ClipOnizerAudioProcessor& processor;
-    float liveDotSmoothed = 0.0f;
+    float liveDotPosSmoothed = 0.0f;
+    float liveDotNegSmoothed = 0.0f;
     float verticalZoom = 1.0f;                    // <-- ДОДАТИ
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipShaperComponent)

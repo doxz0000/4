@@ -116,7 +116,8 @@ public:
     double fallbackPpq = 0.0;
 
     std::atomic<float> clipIndicatorLevel { 0.0f };
-    std::atomic<float> scopeLiveAmplitude { 0.0f };   // <-- нове: піковий рівень для точки на Clip Shaper
+    std::atomic<float> scopeLivePeakPos { 0.0f };   // огинаюча позитивних піків
+    std::atomic<float> scopeLivePeakNeg { 0.0f };   // огинаюча негативних піків (значення <= 0) // <-- нове: піковий рівень для точки на Clip Shaper
 
     void setOscilloscopeBars (float bars) noexcept
     {
@@ -138,7 +139,8 @@ private:
     juce::LinearSmoothedValue<float> outputGainSmoothed { 1.0f };
 
     float clipEnvelope = 0.0f;
-    float liveAmplitudeEnvelope = 0.0f;   // <-- нове
+    float livePeakPosEnvelope = 0.0f;
+    float livePeakNegEnvelope = 0.0f;
     uint32_t lastScopeConfigVersion = 0;
 
     // Состояние детектора луп-цикла — ДОЛЖНО быть per-instance,
