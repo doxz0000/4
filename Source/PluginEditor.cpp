@@ -75,6 +75,11 @@ ClipShaperComponent::ClipShaperComponent (ClipOnizerAudioProcessor& p)
     startTimerHz (30);
 }
 
+void ClipShaperComponent::setVerticalZoom (float zoom) noexcept
+{
+    verticalZoom = juce::jlimit (0.2f, 4.0f, zoom);
+}
+
 void ClipShaperComponent::paint (juce::Graphics& g)
 {
     auto bounds = getLocalBounds().toFloat();
@@ -86,11 +91,21 @@ void ClipShaperComponent::paint (juce::Graphics& g)
     const float thresholdLin = processor.getThresholdLinear();
     const float knee01 = processor.getSoftnessNormalized();
 
-    constexpr float maxAmp = 2.0f;
+    constexpr float baseRange = 2.0f;
+    const float effectiveRange =
+        juce::jmax (0.05f, baseRange / juce::jmax (0.1f, verticalZoom));
+
+    // Осцилоскоп ділить висоту навпіл (симетрично: -range..+range),
+    // а шейпер малює тільки 0..maxAmp на всю висоту.
+    // Щоб швидкість зміни масштабу була однаковою — множимо на 2.
+    const float maxAmp = effectiveRange * 2.0f;
+
     auto ampToNorm = [maxAmp] (float amp)
     {
         return juce::jlimit (0.0f, 1.0f, amp / maxAmp);
     };
+
+
 
     g.setColour (ClipOnizerColours::scopeGrid);
 
@@ -1129,9 +1144,11 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
     verticalZoomSlider.onValueChange =
         [this]
         {
-            oscilloscope.setVerticalZoom (
-                static_cast<float> (
-                    verticalZoomSlider.getValue()));
+            const float zoom =
+                static_cast<float> (verticalZoomSlider.getValue());
+
+            oscilloscope.setVerticalZoom (zoom);
+            clipShaper.setVerticalZoom (zoom);  
         };
 
     addAndMakeVisible (verticalZoomSlider);

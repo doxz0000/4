@@ -42,12 +42,14 @@ class ClipShaperComponent : public juce::Component,
 public:
     explicit ClipShaperComponent (ClipOnizerAudioProcessor& p);
     void paint (juce::Graphics&) override;
+    void setVerticalZoom (float zoom) noexcept;   // <-- ДОДАТИ
 
 private:
     void timerCallback() override { repaint(); }
 
     ClipOnizerAudioProcessor& processor;
     float liveDotSmoothed = 0.0f;
+    float verticalZoom = 1.0f;                    // <-- ДОДАТИ
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipShaperComponent)
 };
