@@ -131,6 +131,27 @@ void ClipShaperComponent::paint (juce::Graphics& g)
         g.drawHorizontalLine ((int) yNeg, plot.getX(), plot.getRight());
     }
 
+    // dB labels on the right side
+    g.setColour (ClipOnizerColours::textAmber.withAlpha (0.55f));
+    g.setFont (10.0f);
+
+    for (float db : { -24.0f, -12.0f, -6.0f, 0.0f, 6.0f })
+    {
+        const float gain = juce::Decibels::decibelsToGain (db);
+        const float yPos = ampToY (gain);
+
+        if (yPos >= plot.getY() && yPos <= plot.getBottom())
+        {
+            g.drawText (
+                (db > 0.0f ? "+" : juce::String())
+                    + juce::String (db, 0) + " dB",
+                static_cast<int> (plot.getRight()) - 58,
+                static_cast<int> (yPos) - 12,
+                55, 12,
+                juce::Justification::right);
+        }
+    }
+
     // Діагональ unity-gain: кути plot відповідають (-max,-max) і (+max,+max).
     g.setColour (ClipOnizerColours::traceNormal.withAlpha (0.3f));
     g.drawLine (plot.getX(), plot.getBottom(), plot.getRight(), plot.getY(), 1.0f);
@@ -494,10 +515,10 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
             g.drawText (
                 (db > 0.0f ? "+" : juce::String())
                     + juce::String (db, 0) + " dB",
-                static_cast<int> (plot.getX()) + 3,
+                static_cast<int> (plot.getRight()) - 58,
                 static_cast<int> (y) - 12,
                 55, 12,
-                juce::Justification::left);
+                juce::Justification::right);
         }
     }
 
