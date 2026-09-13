@@ -63,6 +63,8 @@ void ClipOnizerAudioProcessor::prepareToPlay (double sampleRate, int)
         juce::Decibels::decibelsToGain (apvts.getRawParameterValue (idOutput)->load()));
 
     clipEnvelope = 0.0f;
+    liveAmplitudeEnvelope = 0.0f;                
+    scopeLiveAmplitude.store (0.0f, std::memory_order_release);  
 
     scopeWriteCounter.store (0, std::memory_order_release);
     scopeBlockId.store (std::numeric_limits<int64_t>::min(), std::memory_order_release);
@@ -268,6 +270,8 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
 
     float blockMaxClip = 0.0f;
+    float blockPeakAbs = 0.0f;      
+    float blockPeakSigned = 0.0f;   
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -299,6 +303,12 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 scopeValue = dry;
 
                 const float absDry = std::abs (dry);
+
+                if (absDry > blockPeakAbs)        
+                {
+                    blockPeakAbs = absDry;
+                    blockPeakSigned = dry;
+                }
 
                 if (absDry > thresholdLin)
                 {
@@ -377,12 +387,17 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     constexpr float attack = 0.35f;
     constexpr float release = 0.001f;
 
-    const float coeff =
-        blockMaxClip > clipEnvelope ? attack : release;
-
+    const float coeff = blockMaxClip > clipEnvelope ? attack : release;
     clipEnvelope += (blockMaxClip - clipEnvelope) * coeff;
-
     clipIndicatorLevel.store (clipEnvelope, std::memory_order_release);
+
+    // --- нове: peak-envelope для точки Clip Shaper ---
+    constexpr float liveAttack  = 1.0f;   // швидко реагує на пік
+    constexpr float liveRelease = 0.01f;  // повільніше спадає, як у peak-метрі
+    const float liveCoeff = blockPeakAbs > std::abs (liveAmplitudeEnvelope) ? liveAttack : liveRelease;
+    liveAmplitudeEnvelope += (blockPeakSigned - liveAmplitudeEnvelope) * liveCoeff;
+    scopeLiveAmplitude.store (liveAmplitudeEnvelope, std::memory_order_release);
+
 }
 
 //==============================================================================

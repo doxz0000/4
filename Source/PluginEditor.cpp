@@ -186,28 +186,12 @@ void ClipShaperComponent::paint (juce::Graphics& g)
         (int) plot.getX(), (int) threshYPos - 16, 200, 14,
         juce::Justification::left);
 
-    // Жива точка: тепер бере ЗНАКОВЕ значення, а не abs(), бо графік симетричний.
-    const int64_t writeCounter =
-        processor.scopeWriteCounter.load (std::memory_order_acquire);
+        const float liveAmp = processor.scopeLiveAmplitude.load (std::memory_order_acquire);
+        liveDotSmoothed += (liveAmp - liveDotSmoothed) * 0.25f;
 
-    const int bufSize = ClipOnizerAudioProcessor::scopeBufferSize;
-
-    const int lastIdx =
-        static_cast<int> ((writeCounter - 1 + bufSize) % bufSize);
-
-    const float liveAmp =
-        writeCounter > 0
-            ? processor.scopeBuffer[(size_t) lastIdx].value
-            : 0.0f;
-
-    liveDotSmoothed += (liveAmp - liveDotSmoothed) * 0.25f;
-
-    const auto dotResult =
-        ClipShaper::process (liveDotSmoothed, thresholdLin, knee01);
-
+    const auto dotResult = ClipShaper::process (liveDotSmoothed, thresholdLin, knee01);
     const float dotPx = ampToX (liveDotSmoothed);
     const float dotPy = ampToY (dotResult.first);
-
     const juce::Colour dotColour =
         dotResult.second < 0.001f ? ClipOnizerColours::traceNormal
         : (dotResult.second < 0.85f ? ClipOnizerColours::traceSoftClip
