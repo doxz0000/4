@@ -156,8 +156,10 @@ private:
         { 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f };
 
     void timeScaleButtonClicked (int index);
+    void drawZoomTicks (juce::Graphics& g); 
 
     juce::Label bpmLabel;
+    juce::Label zoomValueLabel;     
     juce::Slider verticalZoomSlider;
 
     juce::Label modelLabel, subtitleLabel, titleLabel;

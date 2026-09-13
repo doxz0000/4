@@ -80,6 +80,8 @@ void ClipShaperComponent::setVerticalZoom (float zoom) noexcept
     verticalZoom = juce::jlimit (0.2f, 4.0f, zoom);
 }
 
+
+
 void ClipShaperComponent::paint (juce::Graphics& g)
 {
     auto bounds = getLocalBounds().toFloat();
@@ -265,15 +267,6 @@ void OscilloscopeComponent::setVerticalZoom (float zoom) noexcept
 {
     verticalZoom = juce::jlimit (0.2f, 4.0f, zoom);
 }
-
-
-
-
-
-
-
-
-
 
 
 void OscilloscopeComponent::captureNewSamples()
@@ -949,6 +942,40 @@ g.setFont (juce::Font (juce::FontOptions (
 
 
 //==============================================================================
+// ZOOM Tricks
+void ClipOnizerAudioProcessorEditor::drawZoomTicks (juce::Graphics& g)
+{
+    auto bounds = verticalZoomSlider.getBounds().toFloat();
+
+    const double minV = verticalZoomSlider.getMinimum();
+    const double maxV = verticalZoomSlider.getMaximum();
+
+    const float trackTop    = bounds.getY() + 4.0f;
+    const float trackBottom = bounds.getBottom() - 4.0f;
+
+    struct Tick { double value; const char* label; };
+    const Tick ticks[] =
+    {
+        { 4.0, "4x" }, { 2.0, "2x" }, { 1.0, "1x" },
+        { 0.5, "0.5x" }, { 0.2, "0.2x" }
+    };
+
+    g.setColour (ClipOnizerColours::textAmber.withAlpha (0.7f));
+    g.setFont (juce::Font (juce::FontOptions (9.0f)));
+
+    for (auto& t : ticks)
+    {
+        const double norm = (t.value - minV) / (maxV - minV);
+        const float y = trackBottom - static_cast<float> (norm) * (trackBottom - trackTop);
+
+        g.drawLine (bounds.getX() - 4.0f, y, bounds.getX(), y, 1.0f);
+        g.drawText (t.label,
+                     static_cast<int> (bounds.getX()) - 34, static_cast<int> (y) - 6,
+                     30, 12,
+                     juce::Justification::right);
+    }
+}
+//==============================================================================
 // CLIP INDICATOR
 //==============================================================================
 ClipIndicatorComponent::ClipIndicatorComponent (ClipOnizerAudioProcessor& p)
@@ -1156,6 +1183,9 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
 
             oscilloscope.setVerticalZoom (zoom);
             clipShaper.setVerticalZoom (zoom);  
+            zoomValueLabel.setText (                     
+            juce::String (zoom, 2) + "x",
+            juce::dontSendNotification);
         };
 
     addAndMakeVisible (verticalZoomSlider);
@@ -1262,6 +1292,8 @@ void ClipOnizerAudioProcessorEditor::paint (juce::Graphics& g)
             static_cast<float> (corner.y),
             1.0f);
     }
+
+    drawZoomTicks (g);
 }
 
 void ClipOnizerAudioProcessorEditor::resized()
@@ -1327,7 +1359,7 @@ void ClipOnizerAudioProcessorEditor::resized()
         area.removeFromBottom (26);
 
     auto zoomStrip =
-        area.removeFromRight (26);
+        area.removeFromRight (56);
 
     area.removeFromRight (6);
 
@@ -1343,7 +1375,12 @@ void ClipOnizerAudioProcessorEditor::resized()
 
     clipShaper.setBounds (shaperArea);
     oscilloscope.setBounds (scopeArea);
-    verticalZoomSlider.setBounds (zoomStrip);
+
+    auto zoomValueArea = zoomStrip.removeFromBottom (14);
+    zoomValueLabel.setBounds (zoomValueArea);
+
+    auto zoomSliderArea = zoomStrip.removeFromRight (22);
+    verticalZoomSlider.setBounds (zoomSliderArea);
 
     auto scopeRowRight = scopeRow;
 
