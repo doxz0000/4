@@ -67,6 +67,76 @@ void ClipOnizerLookAndFeel::drawRotarySlider (
 }
 
 //==============================================================================
+// LINEAR SLIDER (RECTANGULAR THUMB)
+//==============================================================================
+void ClipOnizerLookAndFeel::drawLinearSlider (juce::Graphics& g,
+    int x, int y, int width, int height,
+    float sliderPos,
+    float minSliderPos,
+    float maxSliderPos,
+    const juce::Slider::SliderStyle style,
+    juce::Slider& slider)
+{
+    // For non-vertical sliders, use default drawing
+    if (style != juce::Slider::LinearVertical)
+    {
+        juce::LookAndFeel_V4::drawLinearSlider (g, x, y, width, height,
+            sliderPos, minSliderPos, maxSliderPos, style, slider);
+        return;
+    }
+
+    juce::ignoreUnused (minSliderPos, maxSliderPos);
+
+    const float trackWidth = 4.0f;
+    const float trackX = static_cast<float> (x) + (static_cast<float> (width) - trackWidth) * 0.5f;
+    const float trackY = static_cast<float> (y);
+    const float trackH = static_cast<float> (height);
+
+    // Draw track background
+    g.setColour (ClipOnizerColours::metalEdge.darker (0.4f));
+    g.fillRoundedRectangle (trackX, trackY, trackWidth, trackH, 2.0f);
+
+    // Draw track fill (from thumb to bottom)
+    if (sliderPos > trackY && sliderPos < trackY + trackH)
+    {
+        const float fillY = sliderPos;
+        const float fillH = (trackY + trackH) - sliderPos;
+        g.setColour (ClipOnizerColours::traceSoftClip.withAlpha (0.5f));
+        g.fillRoundedRectangle (trackX, fillY, trackWidth, fillH, 2.0f);
+    }
+
+    // Draw rectangular thumb (wider than track for easy grabbing)
+    const float thumbWidth = 18.0f;
+    const float thumbHeight = 8.0f;
+    const float thumbX = static_cast<float> (x) + (static_cast<float> (width) - thumbWidth) * 0.5f;
+    const float thumbY = sliderPos - (thumbHeight * 0.5f);
+
+    juce::Rectangle<float> thumbRect (thumbX, thumbY, thumbWidth, thumbHeight);
+
+    // Thumb shadow
+    g.setColour (juce::Colours::black.withAlpha (0.3f));
+    g.fillRoundedRectangle (thumbRect.translated (1.0f, 1.0f), 2.0f);
+
+    // Thumb body with gradient
+    juce::ColourGradient thumbGrad (
+        ClipOnizerColours::panelLight, thumbX, thumbY,
+        ClipOnizerColours::panelDark, thumbX, thumbY + thumbHeight, false);
+    g.setGradientFill (thumbGrad);
+    g.fillRoundedRectangle (thumbRect, 2.0f);
+
+    // Thumb border
+    g.setColour (ClipOnizerColours::textAmber);
+    g.drawRoundedRectangle (thumbRect, 2.0f, 1.5f);
+
+    // Thumb grip lines
+    g.setColour (juce::Colours::black.withAlpha (0.4f));
+    const float lineY1 = thumbY + thumbHeight * 0.33f;
+    const float lineY2 = thumbY + thumbHeight * 0.66f;
+    g.drawLine (thumbX + 3.0f, lineY1, thumbX + thumbWidth - 3.0f, lineY1, 0.5f);
+    g.drawLine (thumbX + 3.0f, lineY2, thumbX + thumbWidth - 3.0f, lineY2, 0.5f);
+}
+
+//==============================================================================
 // CLIP SHAPER
 //==============================================================================
 ClipShaperComponent::ClipShaperComponent (ClipOnizerAudioProcessor& p)
@@ -938,9 +1008,10 @@ g.setFont (juce::Font (juce::FontOptions (
     g.drawText (
         juce::String (barsOnScreen, 2) + " BAR   "
             + juce::String (percent) + "%",
-        static_cast<int> (plot.getRight()) - 120,
-        static_cast<int> (plot.getY()) - 17,
-        120, 14,
+        static_cast<int> (plot.getRight()) - 120, // X-координата (правий край - 120px)
+        
+        static_cast<int> (plot.getBottom()) + 2,
+        120, 14, // ширина 120px, висота 14px
         juce::Justification::right);
 
     g.setColour (
