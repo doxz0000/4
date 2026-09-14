@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<title>CLIPONIZER No.8</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <div class="corner" id="corner-tl"></div>
+    <div class="corner" id="corner-tr"></div>
+    <div class="corner" id="corner-bl"></div>
+    <div class="corner" id="corner-br"></div>
+
+    <div id="topBar">
+      <div id="clipIndicator">
+        <div id="clipGlow"></div>
+        <div id="clipLed"></div>
+        <div id="clipLedLabel">CLIP</div>
+      </div>
+      <div id="titleBlock">
+        <div id="modelLabel">MODEL-CLIPONIZER No.8</div>
+        <div id="subtitleLabel">DR.DOC SOUNDLAB-EQUIPMENT</div>
+        <div id="titleLabel">CLIP-TO-ZERO&nbsp;&nbsp;&nbsp;/&nbsp;&nbsp;&nbsp;NO LATENCY CLIPPER</div>
+      </div>
+    </div>
+
+    <div id="mainRow">
+      <div class="scopePanel" id="shaperPanel">
+        <div class="panelTitle">CLIP SHAPER</div>
+        <canvas id="shaperCanvas"></canvas>
+        <div class="thresholdLabel" id="shaperThresholdLabel"></div>
+      </div>
+
+      <div class="scopePanel" id="scopePanelEl">
+        <div class="panelTitle">REAL-TIME OSCILLOSCOPE</div>
+        <canvas id="scopeCanvas"></canvas>
+        <div class="thresholdLabel" id="scopeThresholdLabel"></div>
+        <div id="scopeFooter">
+          <div id="timeButtons">
+            <button class="barBtn" data-bars="0.25">1/4 BAR</button>
+            <button class="barBtn" data-bars="0.5">1/2 BAR</button>
+            <button class="barBtn active" data-bars="1">1 BAR</button>
+            <button class="barBtn" data-bars="2">2 BAR</button>
+            <button class="barBtn" data-bars="4">4 BAR</button>
+            <button class="barBtn" data-bars="8">8 BAR</button>
+          </div>
+          <div id="bpmLabel">BPM: 120</div>
+        </div>
+        <div id="scopeProgress"></div>
+      </div>
+
+      <div id="zoomStrip">
+        <input type="range" id="zoomSlider" min="0.2" max="4" step="0.01" value="1">
+        <div id="zoomValueLabel">1.00x</div>
+      </div>
+    </div>
+
+    <div id="bottomRow">
+      <div class="knobCell">
+        <div class="knobLabel">INPUT</div>
+        <div class="knob" id="knobInput" data-param="input"><img class="knobImg" src="knob.png" draggable="false"></div>
+        <div class="knobValue" id="valInput">0.0 dB</div>
+      </div>
+      <div class="knobCell">
+        <div class="knobLabel">THRESHOLD</div>
+        <div class="knob" id="knobThreshold" data-param="threshold"><img class="knobImg" src="knob.png" draggable="false"></div>
+        <div class="knobValue" id="valThreshold">0.0 dB</div>
+      </div>
+      <div class="knobCell">
+        <div class="knobLabel">SOFTNESS / KNEE</div>
+        <div class="knob" id="knobSoftness" data-param="softness"><img class="knobImg" src="knob.png" draggable="false"></div>
+        <div class="knobValue" id="valSoftness">20.0 %</div>
+      </div>
+      <div class="knobCell">
+        <div class="knobLabel">OUTPUT</div>
+        <div class="knob" id="knobOutput" data-param="output"><img class="knobImg" src="knob.png" draggable="false"></div>
+        <div class="knobValue" id="valOutput">0.0 dB</div>
+      </div>
+      <div class="knobCell" id="cellDelta">
+        <button id="deltaButton"><img id="deltaImg" src="DeltaOff.png" draggable="false"></button>
+      </div>
+    </div>
+  </div>
+
+<script src="ui.js"></script>
+</body>
+</html>
