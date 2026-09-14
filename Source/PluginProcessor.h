@@ -1,6 +1,11 @@
 /*
     MODEL-CLIPONIZER No.8 — DR.DOC SOUNDLAB-EQUIPMENT
     CLIP-TO-ZERO / No Latency Clipper
+
+    Цей файл БЕЗ ЗМІН відносно оригіналу — DSP-логіка і оброблення
+    аудіо не залежать від того, чим намальований інтерфейс (JUCE-компоненти
+    чи HTML/CSS у WebBrowserComponent). Усі поля, потрібні редактору
+    (scopeBuffer, scopeWriteCounter, currentBpm, apvts, і т.д.), вже public.
 */
 
 #pragma once

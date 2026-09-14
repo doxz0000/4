@@ -1,6 +1,14 @@
 /*
     MODEL-CLIPONIZER No.8 — DR.DOC SOUNDLAB-EQUIPMENT
     PluginEditor.h
+
+    HTML/CSS UI через juce::WebBrowserComponent (JUCE 8).
+
+    Весь малюнок (ручки, осцилоскоп, clip-shaper, LED) тепер живе у
+    WebUI/ui.html + WebUI/style.css + WebUI/ui.js. C++ відповідає лише за:
+      1) віддачу цих файлів у браузер (resource provider),
+      2) прийом команд з JS (зміна параметрів, вибір такту осцилоскопа),
+      3) ~30 Гц пуш стану (значення параметрів, дані хвилі, піки, BPM) у JS.
 */
 
 #pragma once
@@ -10,170 +18,54 @@
 #include <limits>
 #include <vector>
 #include <cstdint>
-
-namespace ClipOnizerColours
-{
-    const juce::Colour panelDark     { 0xff2b2a28 };
-    const juce::Colour panelLight    { 0xff3d3b37 };
-    const juce::Colour metalEdge     { 0xff5a564e };
-    const juce::Colour scopeGlassBg  { 0xff0c0f0c };
-    const juce::Colour scopeGrid     { 0xff2e3a2e };
-    const juce::Colour traceNormal   { 0xff8fe3a0 };
-    const juce::Colour traceSoftClip { 0xffffb347 };
-    const juce::Colour traceHardClip { 0xffff4d4d };
-    const juce::Colour thresholdLine { 0xffe0d9c0 };
-    const juce::Colour textAmber     { 0xffe8c37a };
-    const juce::Colour ledOff        { 0xff1c2a1c };
-}
-
-class ClipOnizerLookAndFeel : public juce::LookAndFeel_V4
-{
-public:
-    ClipOnizerLookAndFeel();
-
-    void drawRotarySlider (juce::Graphics&, int x, int y, int width, int height,
-                           float sliderPosProportional, float rotaryStartAngle,
-                           float rotaryEndAngle, juce::Slider&) override;
-
-    void drawLinearSlider (juce::Graphics&, int x, int y, int width, int height,
-                           float sliderPos, float minSliderPos, float maxSliderPos,
-                           const juce::Slider::SliderStyle style,
-                           juce::Slider&) override;
-
-    juce::Image knobImage;
-};
-
-class ClipShaperComponent : public juce::Component,
-                            private juce::Timer
-{
-public:
-    explicit ClipShaperComponent (ClipOnizerAudioProcessor& p);
-    void paint (juce::Graphics&) override;
-    void setVerticalZoom (float zoom) noexcept;   // <-- ДОДАТИ
-
-private:
-    void timerCallback() override { repaint(); }
-
-    ClipOnizerAudioProcessor& processor;
-    float liveDotPosSmoothed = 0.0f;
-    float liveDotNegSmoothed = 0.0f;
-    float verticalZoom = 1.0f;                    // <-- ДОДАТИ
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipShaperComponent)
-};
-
-class OscilloscopeComponent : public juce::Component,
-                              private juce::Timer
-{
-public:
-    explicit OscilloscopeComponent (ClipOnizerAudioProcessor& p);
-
-    void paint (juce::Graphics&) override;
-
-    void setTimeDivision (float bars) noexcept;
-    void setVerticalZoom (float zoom) noexcept;
-
-private:
-    void captureNewSamples();
-    void timerCallback() override
-    {
-        captureNewSamples();
-        repaint();
-    }
-
-    ClipOnizerAudioProcessor& processor;
-
-    float barsOnScreen = 1.0f;
-    float verticalZoom = 1.0f;
-
-
-
-// Current block being recorded.
-std::vector<ScopeSample> blockSamples;
-
-// Previous completed block.
-// It remains visible while the new block is being recorded.
-std::vector<ScopeSample> previousBlockSamples;
-
-// Absolute counter of the next sample to copy.
-int64_t lastCapturedCounter = 0;
-
-int64_t currentBlockId =
-    std::numeric_limits<int64_t>::min();
-
-int64_t previousBlockId =
-    std::numeric_limits<int64_t>::min();
-
-
-
-
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OscilloscopeComponent)
-};
-
-class ClipIndicatorComponent : public juce::Component,
-                               private juce::Timer
-{
-public:
-    explicit ClipIndicatorComponent (ClipOnizerAudioProcessor& p);
-    void paint (juce::Graphics&) override;
-
-private:
-    void timerCallback() override { repaint(); }
-
-    ClipOnizerAudioProcessor& processor;
-    float smoothedLevel = 0.0f;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipIndicatorComponent)
-};
+#include <optional>
 
 class ClipOnizerAudioProcessorEditor : public juce::AudioProcessorEditor,
-                                       private juce::Timer
+                                        private juce::Timer
 {
 public:
     explicit ClipOnizerAudioProcessorEditor (ClipOnizerAudioProcessor&);
     ~ClipOnizerAudioProcessorEditor() override;
 
-    void paint (juce::Graphics&) override;
     void resized() override;
+
+    // Публічні, бо викликаються з лямбд у Options (побудова webView
+    // відбувається до завершення конструктора, тож методи мають бути
+    // доступні одразу).
+    std::optional<juce::WebBrowserComponent::Resource> getResource (const juce::String& url);
+
+    juce::var jsSetParameter    (const juce::Array<juce::var>& args);
+    juce::var jsBeginGesture    (const juce::Array<juce::var>& args);
+    juce::var jsEndGesture      (const juce::Array<juce::var>& args);
+    juce::var jsSetTimeDivision (const juce::Array<juce::var>& args);
+    juce::var jsGetInitialState (const juce::Array<juce::var>& args);
 
 private:
     void timerCallback() override;
 
+    void setTimeDivision (float bars) noexcept;
+    void captureNewSamples();
+    void pushStateToBrowser();
+
+    juce::String buildWaveformJson (const std::vector<ScopeSample>& samples,
+                                     int buckets,
+                                     double referenceTotalSamples) const;
+
     ClipOnizerAudioProcessor& audioProcessor;
-    ClipOnizerLookAndFeel lookAndFeel;
 
-    juce::Slider inputSlider, outputSlider, thresholdSlider, softnessSlider;
-    juce::Label inputLabel, outputLabel, thresholdLabel, softnessLabel;
-    juce::ImageButton deltaButton { "deltaButton" };
-    juce::Image deltaOnImage;
-    juce::Image deltaOffImage;
+    // ВАЖЛИВО: webView створюється з Options, які прив'язані до *this —
+    // ініціалізується в конструкторі через member-init-list.
+    juce::WebBrowserComponent webView;
 
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>
-        inputAttachment, outputAttachment, thresholdAttachment, softnessAttachment;
-
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>
-        deltaAttachment;
-
-    ClipShaperComponent clipShaper;
-    OscilloscopeComponent oscilloscope;
-    ClipIndicatorComponent clipIndicator;
-
-    juce::TextButton timeScaleButtons[6];
-
-    static constexpr float timeScaleValues[6] =
-        { 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f };
-
-    void timeScaleButtonClicked (int index);
-    void drawZoomTicks (juce::Graphics& g); 
-
-    juce::Label bpmLabel;
-    juce::Label zoomValueLabel;     
-    juce::Slider verticalZoomSlider;
-
-    juce::Label modelLabel, subtitleLabel, titleLabel;
-
-    juce::Image backgroundImage;
+    // -------------------------------------------------------------------
+    // Стан захоплення осцилоскопа — перенесено 1:1 зі старого
+    // OscilloscopeComponent, лише без відмальовки (вона тепер у ui.js).
+    std::vector<ScopeSample> blockSamples;
+    std::vector<ScopeSample> previousBlockSamples;
+    int64_t lastCapturedCounter = 0;
+    int64_t currentBlockId  = std::numeric_limits<int64_t>::min();
+    int64_t previousBlockId = std::numeric_limits<int64_t>::min();
+    float barsOnScreen = 1.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipOnizerAudioProcessorEditor)
 };

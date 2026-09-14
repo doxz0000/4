@@ -1,417 +1,271 @@
-﻿/*
+/*
     MODEL-CLIPONIZER No.8 — DR.DOC SOUNDLAB-EQUIPMENT
     PluginEditor.cpp
 */
 
 #include "PluginEditor.h"
-#include <cmath>
 #include "BinaryData.h"
+#include <cmath>
 
-//==============================================================================
-// LOOK AND FEEL
-//==============================================================================
-ClipOnizerLookAndFeel::ClipOnizerLookAndFeel()
+namespace
 {
-    setColour (juce::Slider::thumbColourId, ClipOnizerColours::textAmber);
-    setColour (juce::Slider::rotarySliderFillColourId, ClipOnizerColours::traceSoftClip);
-    setColour (juce::Slider::rotarySliderOutlineColourId, ClipOnizerColours::metalEdge);
-    setColour (juce::Slider::textBoxTextColourId, ClipOnizerColours::textAmber);
-    setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-    setColour (juce::Label::textColourId, ClipOnizerColours::textAmber);
-    setColour (juce::TextButton::buttonColourId, ClipOnizerColours::panelLight);
-    setColour (juce::TextButton::buttonOnColourId, ClipOnizerColours::traceHardClip);
-    setColour (juce::TextButton::textColourOnId, juce::Colours::white);
-    setColour (juce::TextButton::textColourOffId, ClipOnizerColours::textAmber);
+    // Скільки "колонок" (min/max пар) хвилі відправляти в JS за один тік.
+    // JS сам розтягує їх на реальну ширину canvas.
+    constexpr int waveformBuckets = 600;
 
-    // Завантажуємо зображення ручки з бінарних даних
-    knobImage = juce::ImageCache::getFromMemory(BinaryData::knob_png, BinaryData::knob_pngSize);
-}
-
-void ClipOnizerLookAndFeel::drawRotarySlider (
-    juce::Graphics& g, int x, int y, int width, int height,
-    float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
-    juce::Slider&)
-{
-    auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (4.0f);
-    const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
-    const auto centre = bounds.getCentre();
-    const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
-
-    // Якщо картинка ручки завантажена - малюємо її з обертанням
-    if (knobImage.isValid())
+    juce::WebBrowserComponent::Resource makeResource (const void* data, int size, const juce::String& mime)
     {
-        // Масштабуємо картинку до розміру ручки
-        const float knobSize = radius * 2.0f;
-        const float scale = knobSize / static_cast<float> (knobImage.getWidth());
-
-        // Розміри картинки
-        const float imgW = static_cast<float> (knobImage.getWidth());
-        const float imgH = static_cast<float> (knobImage.getHeight());
-
-        // Трансформація: спочатку центруємо картинку в (0,0), потім обертаємо, масштабуємо і переміщуємо в centre
-        juce::AffineTransform transform = juce::AffineTransform::translation (-imgW / 2.0f, -imgH / 2.0f)
-            .rotated (angle)
-            .scaled (scale, scale)
-            .translated (centre.x, centre.y);
-
-        // Малюємо обернуту картинку ручки
-        g.drawImageTransformed (knobImage, transform);
+        auto* bytePtr = static_cast<const std::byte*> (data);
+        return { std::vector<std::byte> (bytePtr, bytePtr + size), mime };
     }
-    else
+
+    juce::WebBrowserComponent::Options makeWebViewOptions (ClipOnizerAudioProcessorEditor& editor)
     {
-        // Fallback: програмне малювання ручки (якщо картинка не завантажилася)
-        g.setColour (ClipOnizerColours::metalEdge);
-        g.drawEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f, 1.5f);
+        using Options = juce::WebBrowserComponent::Options;
 
-        juce::Path arcTrack;
-        arcTrack.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f, rotaryStartAngle, rotaryEndAngle, true);
-        g.setColour (ClipOnizerColours::metalEdge.darker (0.4f));
-        g.strokePath (arcTrack, juce::PathStrokeType (2.5f));
-
-        juce::Path arcValue;
-        arcValue.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f, rotaryStartAngle, angle, true);
-        g.setColour (ClipOnizerColours::traceSoftClip);
-        g.strokePath (arcValue, juce::PathStrokeType (2.5f));
-
-        juce::Path pointer;
-        const float pointerLength = radius * 0.75f;
-        pointer.addRectangle (-1.5f, -pointerLength, 3.0f, pointerLength);
-        pointer.applyTransform (juce::AffineTransform::rotation (angle).translated (centre));
-        g.setColour (ClipOnizerColours::textAmber);
-        g.fillPath (pointer);
-
-        g.setColour (ClipOnizerColours::metalEdge);
-        g.fillEllipse (centre.x - 2.5f, centre.y - 2.5f, 5.0f, 5.0f);
+        return Options{}
+            .withNativeIntegrationEnabled()
+            .withResourceProvider ([&editor] (const juce::String& url)
+                                    {
+                                        return editor.getResource (url);
+                                    },
+                                    juce::String ("http://cliponizer.local"))
+            .withNativeFunction ("setParam",
+                [&editor] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion completion)
+                { completion (editor.jsSetParameter (args)); })
+            .withNativeFunction ("beginGesture",
+                [&editor] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion completion)
+                { completion (editor.jsBeginGesture (args)); })
+            .withNativeFunction ("endGesture",
+                [&editor] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion completion)
+                { completion (editor.jsEndGesture (args)); })
+            .withNativeFunction ("setTimeDivision",
+                [&editor] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion completion)
+                { completion (editor.jsSetTimeDivision (args)); })
+            .withNativeFunction ("getInitialState",
+                [&editor] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion completion)
+                { completion (editor.jsGetInitialState (args)); });
     }
 }
 
 //==============================================================================
-// LINEAR SLIDER (RECTANGULAR THUMB)
-//==============================================================================
-void ClipOnizerLookAndFeel::drawLinearSlider (juce::Graphics& g,
-    int x, int y, int width, int height,
-    float sliderPos,
-    float minSliderPos,
-    float maxSliderPos,
-    const juce::Slider::SliderStyle style,
-    juce::Slider& slider)
+ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (ClipOnizerAudioProcessor& p)
+    : AudioProcessorEditor (&p),
+      audioProcessor (p),
+      webView (makeWebViewOptions (*this))
 {
-    // For non-vertical sliders, use default drawing
-    if (style != juce::Slider::LinearVertical)
-    {
-        juce::LookAndFeel_V4::drawLinearSlider (g, x, y, width, height,
-            sliderPos, minSliderPos, maxSliderPos, style, slider);
-        return;
-    }
+    addAndMakeVisible (webView);
 
-    juce::ignoreUnused (minSliderPos, maxSliderPos);
+    lastCapturedCounter = audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
 
-    const float trackWidth = 4.0f;
-    const float trackX = static_cast<float> (x) + (static_cast<float> (width) - trackWidth) * 0.5f;
-    const float trackY = static_cast<float> (y);
-    const float trackH = static_cast<float> (height);
+    webView.goToURL ("http://cliponizer.local/ui.html");
 
-    // Draw track background
-    g.setColour (ClipOnizerColours::metalEdge.darker (0.4f));
-    g.fillRoundedRectangle (trackX, trackY, trackWidth, trackH, 2.0f);
+    setResizable (true, true);
+    setResizeLimits (980, 660, 1800, 1100);
+    setSize (980, 660);
 
-    // Draw track fill (from thumb to bottom)
-    if (sliderPos > trackY && sliderPos < trackY + trackH)
-    {
-        const float fillY = sliderPos;
-        const float fillH = (trackY + trackH) - sliderPos;
-        g.setColour (ClipOnizerColours::traceSoftClip.withAlpha (0.5f));
-        g.fillRoundedRectangle (trackX, fillY, trackWidth, fillH, 2.0f);
-    }
-
-    // Draw rectangular thumb (wider than track for easy grabbing)
-    const float thumbWidth = 18.0f;
-    const float thumbHeight = 8.0f;
-    const float thumbX = static_cast<float> (x) + (static_cast<float> (width) - thumbWidth) * 0.5f;
-    const float thumbY = sliderPos - (thumbHeight * 0.5f);
-
-    juce::Rectangle<float> thumbRect (thumbX, thumbY, thumbWidth, thumbHeight);
-
-    // Thumb shadow
-    g.setColour (juce::Colours::black.withAlpha (0.3f));
-    g.fillRoundedRectangle (thumbRect.translated (1.0f, 1.0f), 2.0f);
-
-    // Thumb body with gradient
-    juce::ColourGradient thumbGrad (
-        ClipOnizerColours::panelLight, thumbX, thumbY,
-        ClipOnizerColours::panelDark, thumbX, thumbY + thumbHeight, false);
-    g.setGradientFill (thumbGrad);
-    g.fillRoundedRectangle (thumbRect, 2.0f);
-
-    // Thumb border
-    g.setColour (ClipOnizerColours::textAmber);
-    g.drawRoundedRectangle (thumbRect, 2.0f, 1.5f);
-
-    // Thumb grip lines
-    g.setColour (juce::Colours::black.withAlpha (0.4f));
-    const float lineY1 = thumbY + thumbHeight * 0.33f;
-    const float lineY2 = thumbY + thumbHeight * 0.66f;
-    g.drawLine (thumbX + 3.0f, lineY1, thumbX + thumbWidth - 3.0f, lineY1, 0.5f);
-    g.drawLine (thumbX + 3.0f, lineY2, thumbX + thumbWidth - 3.0f, lineY2, 0.5f);
-}
-
-//==============================================================================
-// CLIP SHAPER
-//==============================================================================
-ClipShaperComponent::ClipShaperComponent (ClipOnizerAudioProcessor& p)
-    : processor (p)
-{
     startTimerHz (30);
 }
 
-void ClipShaperComponent::setVerticalZoom (float zoom) noexcept
+ClipOnizerAudioProcessorEditor::~ClipOnizerAudioProcessorEditor() = default;
+
+void ClipOnizerAudioProcessorEditor::resized()
 {
-    verticalZoom = juce::jlimit (0.2f, 4.0f, zoom);
+    webView.setBounds (getLocalBounds());
 }
 
-
-
-void ClipShaperComponent::paint (juce::Graphics& g)
+//==============================================================================
+// RESOURCE PROVIDER — serves WebUI/*.html/css/js (+ the plugin's images)
+// straight out of BinaryData, so the finished plugin is self-contained.
+//==============================================================================
+std::optional<juce::WebBrowserComponent::Resource>
+ClipOnizerAudioProcessorEditor::getResource (const juce::String& url)
 {
-    auto bounds = getLocalBounds().toFloat();
-    g.setColour (ClipOnizerColours::scopeGlassBg);
-    g.fillRoundedRectangle (bounds, 6.0f);
+    juce::String path = url;
 
-    auto plot = bounds.reduced (26.0f);
+    if (auto queryPos = path.indexOfChar ('?'); queryPos >= 0)
+        path = path.substring (0, queryPos);
 
-    const float thresholdLin = processor.getThresholdLinear();
-    const float knee01 = processor.getSoftnessNormalized();
-
-    constexpr float baseRange = 2.0f;
-    const float effectiveRange =
-        juce::jmax (0.05f, baseRange / juce::jmax (0.1f, verticalZoom));
-
-    // Діапазон, в межах якого рахуємо криву (щоб коліно/поріг завжди влазили).
-    const float maxAmp = effectiveRange * 2.0f;
-
-    // Центрований мапінг Y (як в осцилоскопі): 0 амплітуди = середина екрана.
-    auto ampToY = [&] (float amp)
+#if defined (CLIPONIZER_WEBUI_DEV_DIR)
+    // ---- DEV MODE: читаємо файли прямо з диска для швидкого редагування ---
     {
-        const float norm = juce::jlimit (-1.0f, 1.0f, amp / effectiveRange);
-        return plot.getCentreY() - norm * (plot.getHeight() * 0.5f);
-    };
+        juce::File devDir (CLIPONIZER_WEBUI_DEV_DIR);
+        juce::String fileName = path.fromLastOccurrenceOf ("/", false, false);
 
-    // Центрований мапінг X: вхідний сигнал теж симетричний відносно центра.
-    auto ampToX = [&] (float amp)
-    {
-        const float norm = juce::jlimit (-1.0f, 1.0f, amp / effectiveRange);
-        return plot.getCentreX() + norm * (plot.getWidth() * 0.5f);
-    };
+        if (fileName.isEmpty() || path.endsWithIgnoreCase ("cliponizer.local") || path.endsWithIgnoreCase (".local/"))
+            fileName = "ui.html";
 
-    g.setColour (ClipOnizerColours::scopeGrid);
+        juce::File requested = devDir.getChildFile (fileName);
 
-    for (float db : { -24.0f, -12.0f, -6.0f, 0.0f, 6.0f })
-    {
-        const float gain = juce::Decibels::decibelsToGain (db);
-
-        const float xPos = ampToX (gain);
-        const float xNeg = ampToX (-gain);
-        const float yPos = ampToY (gain);
-        const float yNeg = ampToY (-gain);
-
-        g.drawVerticalLine ((int) xPos, plot.getY(), plot.getBottom());
-        g.drawVerticalLine ((int) xNeg, plot.getY(), plot.getBottom());
-        g.drawHorizontalLine ((int) yPos, plot.getX(), plot.getRight());
-        g.drawHorizontalLine ((int) yNeg, plot.getX(), plot.getRight());
-    }
-
-    // dB labels on the right side
-    g.setColour (ClipOnizerColours::textAmber.withAlpha (0.55f));
-    g.setFont (10.0f);
-
-    for (float db : { -24.0f, -12.0f, -6.0f, 0.0f, 6.0f })
-    {
-        const float gain = juce::Decibels::decibelsToGain (db);
-        const float yPos = ampToY (gain);
-
-        if (yPos >= plot.getY() && yPos <= plot.getBottom())
+        if (requested.existsAsFile())
         {
-            g.drawText (
-                (db > 0.0f ? "+" : juce::String())
-                    + juce::String (db, 0) + " dB",
-                static_cast<int> (plot.getRight()) - 58,
-                static_cast<int> (yPos) - 12,
-                55, 12,
-                juce::Justification::right);
+            juce::MemoryBlock mb;
+            requested.loadFileAsData (mb);
+
+            const auto ext = requested.getFileExtension();
+            const juce::String mime = ext == ".css" ? "text/css"
+                                     : ext == ".js"  ? "text/javascript"
+                                     : ext == ".png" ? "image/png"
+                                                       : "text/html";
+
+            return makeResource (mb.getData(), (int) mb.getSize(), mime);
         }
     }
+#endif
 
-    // Діагональ unity-gain: кути plot відповідають (-max,-max) і (+max,+max).
-    g.setColour (ClipOnizerColours::traceNormal.withAlpha (0.3f));
-    g.drawLine (plot.getX(), plot.getBottom(), plot.getRight(), plot.getY(), 1.0f);
+    if (path.endsWithIgnoreCase ("ui.html") || path.endsWithIgnoreCase ("/") || path.isEmpty()
+        || path == "http://cliponizer.local")
+        return makeResource (BinaryData::ui_html, BinaryData::ui_htmlSize, "text/html");
 
-    constexpr int steps = 400;
+    if (path.endsWithIgnoreCase ("style.css"))
+        return makeResource (BinaryData::style_css, BinaryData::style_cssSize, "text/css");
 
-    for (int i = 0; i < steps; ++i)
+    if (path.endsWithIgnoreCase ("ui.js"))
+        return makeResource (BinaryData::ui_js, BinaryData::ui_jsSize, "text/javascript");
+
+    if (path.endsWithIgnoreCase ("background.png"))
+        return makeResource (BinaryData::background_png, BinaryData::background_pngSize, "image/png");
+
+    if (path.endsWithIgnoreCase ("knob.png"))
+        return makeResource (BinaryData::knob_png, BinaryData::knob_pngSize, "image/png");
+
+    if (path.endsWithIgnoreCase ("DeltaOn.png"))
+        return makeResource (BinaryData::DeltaOn_png, BinaryData::DeltaOn_pngSize, "image/png");
+
+    if (path.endsWithIgnoreCase ("DeltaOff.png"))
+        return makeResource (BinaryData::DeltaOff_png, BinaryData::DeltaOff_pngSize, "image/png");
+
+    return std::nullopt;
+}
+
+//==============================================================================
+// NATIVE FUNCTIONS — called from JavaScript (window.__JUCE__.backend.invoke)
+//==============================================================================
+juce::var ClipOnizerAudioProcessorEditor::jsSetParameter (const juce::Array<juce::var>& args)
+{
+    if (args.size() < 2)
+        return false;
+
+    const juce::String paramId = args[0].toString();
+    auto* param = audioProcessor.apvts.getParameter (paramId);
+
+    if (param == nullptr)
+        return false;
+
+    if (paramId == ClipOnizerAudioProcessor::idDelta)
     {
-        const float xAmpA = -maxAmp + (i       / (float) steps) * (2.0f * maxAmp);
-        const float xAmpB = -maxAmp + ((i + 1) / (float) steps) * (2.0f * maxAmp);
-
-        const auto rA = ClipShaper::process (xAmpA, thresholdLin, knee01);
-        const auto rB = ClipShaper::process (xAmpB, thresholdLin, knee01);
-
-        const juce::Colour segColour =
-            rA.second < 0.001f ? ClipOnizerColours::traceNormal
-            : (rA.second < 0.85f ? ClipOnizerColours::traceSoftClip
-                                  : ClipOnizerColours::traceHardClip);
-
-        g.setColour (segColour);
-
-        const float pxA = ampToX (xAmpA);
-        const float pxB = ampToX (xAmpB);
-        const float pyA = ampToY (rA.first);
-        const float pyB = ampToY (rB.first);
-
-        g.drawLine (pxA, pyA, pxB, pyB, 2.2f);
+        param->setValueNotifyingHost (((bool) args[1]) ? 1.0f : 0.0f);
+        return true;
     }
 
-    // Поріг: додатна і від'ємна лінії.
-    const float threshYPos = ampToY (thresholdLin);
-    const float threshYNeg = ampToY (-thresholdLin);
+    const float value = (float) (double) args[1];
+    param->setValueNotifyingHost (param->convertTo0to1 (value));
+    return true;
+}
 
-    g.setColour (ClipOnizerColours::thresholdLine);
+juce::var ClipOnizerAudioProcessorEditor::jsBeginGesture (const juce::Array<juce::var>& args)
+{
+    if (args.isEmpty())
+        return false;
 
-    float dash[2] = { 5.0f, 4.0f };
+    if (auto* param = audioProcessor.apvts.getParameter (args[0].toString()))
+        param->beginChangeGesture();
 
-    g.drawDashedLine (
-        juce::Line<float> (plot.getX(), threshYPos, plot.getRight(), threshYPos),
-        dash, 2, 1.2f);
+    return true;
+}
 
-    g.drawDashedLine (
-        juce::Line<float> (plot.getX(), threshYNeg, plot.getRight(), threshYNeg),
-        dash, 2, 1.2f);
+juce::var ClipOnizerAudioProcessorEditor::jsEndGesture (const juce::Array<juce::var>& args)
+{
+    if (args.isEmpty())
+        return false;
 
-    const float thresholdDb = juce::Decibels::gainToDecibels (thresholdLin);
+    if (auto* param = audioProcessor.apvts.getParameter (args[0].toString()))
+        param->endChangeGesture();
 
-    g.setFont (juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold)));
+    return true;
+}
 
-    g.drawText (
-        (thresholdDb > 0.0f ? "THRESHOLD +" : "THRESHOLD ")
-        + juce::String (thresholdDb, 1) + " dB",
-        (int) plot.getX(), (int) threshYPos - 16, 200, 14,
-        juce::Justification::left);
+juce::var ClipOnizerAudioProcessorEditor::jsSetTimeDivision (const juce::Array<juce::var>& args)
+{
+    if (args.isEmpty())
+        return false;
 
-    const float livePeakPos = processor.scopeLivePeakPos.load (std::memory_order_acquire);
-    const float livePeakNeg = processor.scopeLivePeakNeg.load (std::memory_order_acquire);
+    setTimeDivision ((float) (double) args[0]);
+    return true;
+}
 
-    liveDotPosSmoothed += (livePeakPos - liveDotPosSmoothed) * 0.6f;
-    liveDotNegSmoothed += (livePeakNeg - liveDotNegSmoothed) * 0.6f;
+juce::var ClipOnizerAudioProcessorEditor::jsGetInitialState (const juce::Array<juce::var>&)
+{
+    auto* obj = new juce::DynamicObject();
 
-    auto drawLiveDot = [&] (float amp)
+    auto describeParam = [this] (const juce::String& id) -> juce::var
     {
-        const auto dotResult = ClipShaper::process (amp, thresholdLin, knee01);
-        const float dotPx = ampToX (amp);
-        const float dotPy = ampToY (dotResult.first);
-        const juce::Colour dotColour =
-            dotResult.second < 0.001f ? ClipOnizerColours::traceNormal
-            : (dotResult.second < 0.85f ? ClipOnizerColours::traceSoftClip
-                                         : ClipOnizerColours::traceHardClip);
+        auto* o = new juce::DynamicObject();
 
-        g.setColour (dotColour);
-        g.fillEllipse (dotPx - 4.5f, dotPy - 4.5f, 9.0f, 9.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.6f));
-        g.drawEllipse (dotPx - 4.5f, dotPy - 4.5f, 9.0f, 9.0f, 1.0f);
+        if (auto* p = audioProcessor.apvts.getParameter (id))
+        {
+            const auto range = p->getNormalisableRange();
+            o->setProperty ("id", id);
+            o->setProperty ("min", (double) range.start);
+            o->setProperty ("max", (double) range.end);
+            o->setProperty ("step", range.interval > 0.0f ? (double) range.interval : 0.01);
+            o->setProperty ("value", (double) p->convertFrom0to1 (p->getValue()));
+            o->setProperty ("label", p->getLabel());
+        }
+
+        return juce::var (o);
     };
 
-    drawLiveDot (liveDotPosSmoothed);
-    drawLiveDot (liveDotNegSmoothed);
+    juce::Array<juce::var> paramList;
+    paramList.add (describeParam (ClipOnizerAudioProcessor::idInput));
+    paramList.add (describeParam (ClipOnizerAudioProcessor::idThreshold));
+    paramList.add (describeParam (ClipOnizerAudioProcessor::idSoftness));
+    paramList.add (describeParam (ClipOnizerAudioProcessor::idOutput));
 
-    g.setColour (ClipOnizerColours::textAmber.withAlpha (0.8f));
-    g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
-    g.drawText ("CLIP SHAPER",
-                bounds.removeFromTop (18).toNearestInt(),
-                juce::Justification::centred);
+    obj->setProperty ("params", paramList);
+    obj->setProperty ("delta", audioProcessor.apvts.getRawParameterValue (ClipOnizerAudioProcessor::idDelta)->load() > 0.5f);
+    obj->setProperty ("barsOnScreen", barsOnScreen);
 
-    g.setColour (ClipOnizerColours::metalEdge);
-    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 6.0f, 1.5f);
+    return juce::var (obj);
 }
 
 //==============================================================================
-// OSCILLOSCOPE
+// TIME DIVISION — 1:1 порт зі старого OscilloscopeComponent::setTimeDivision
 //==============================================================================
-OscilloscopeComponent::OscilloscopeComponent (ClipOnizerAudioProcessor& p)
-    : processor (p)
-{
-    blockSamples.reserve (200000);
-    previousBlockSamples.reserve (200000);
-
-    lastCapturedCounter =
-        processor.scopeWriteCounter.load (std::memory_order_acquire);
-
-    startTimerHz (30);
-}
-
-void OscilloscopeComponent::setTimeDivision (float bars) noexcept
+void ClipOnizerAudioProcessorEditor::setTimeDivision (float bars) noexcept
 {
     barsOnScreen = juce::jlimit (0.25f, 8.0f, bars);
 
-    // Changing the musical length starts a new capture cycle,
-    // but the waveform currently visible on screen is preserved.
     previousBlockSamples = blockSamples;
-
     previousBlockId = currentBlockId;
 
     blockSamples.clear();
+    currentBlockId = std::numeric_limits<int64_t>::min();
 
-    currentBlockId =
-        std::numeric_limits<int64_t>::min();
+    lastCapturedCounter = audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
 
-    const int64_t writeCounter =
-        processor.scopeWriteCounter.load (
-            std::memory_order_acquire);
-
-    lastCapturedCounter = writeCounter;
-
-    // Tell the audio thread to create a fresh musical block.
-    processor.setOscilloscopeBars (barsOnScreen);
+    audioProcessor.setOscilloscopeBars (barsOnScreen);
 }
 
-void OscilloscopeComponent::setVerticalZoom (float zoom) noexcept
-{
-    verticalZoom = juce::jlimit (0.2f, 4.0f, zoom);
-}
-
-
-void OscilloscopeComponent::captureNewSamples()
+//==============================================================================
+// CAPTURE — 1:1 порт зі старого OscilloscopeComponent::captureNewSamples
+//==============================================================================
+void ClipOnizerAudioProcessorEditor::captureNewSamples()
 {
     const int64_t blockId =
-        processor.scopeBlockId.load (
-            std::memory_order_acquire);
+        audioProcessor.scopeBlockId.load (std::memory_order_acquire);
 
     const int64_t blockStart =
-        processor.scopeBlockStartCounter.load (
-            std::memory_order_acquire);
+        audioProcessor.scopeBlockStartCounter.load (std::memory_order_acquire);
 
     const int64_t writeCounter =
-        processor.scopeWriteCounter.load (
-            std::memory_order_acquire);
+        audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
 
-    if (blockId == std::numeric_limits<int64_t>::min()
-        || writeCounter <= 0)
+    if (blockId == std::numeric_limits<int64_t>::min() || writeCounter <= 0)
         return;
-
-    // -------------------------------------------------------------------------
-    // NEW MUSICAL BLOCK
-    //
-    // Do NOT clear the waveform that is currently visible.
-    //
-    // Instead:
-    //     current block -> previous block
-    //     new block     -> starts empty
-    //
-    // This allows the previous waveform to remain visible while the
-    // new waveform is progressively drawn over it.
-    // -------------------------------------------------------------------------
 
     if (currentBlockId != blockId)
     {
-        // Дописуємо семпли старого блока, які ще не скопійовані
-        // (від lastCapturedCounter до початку нового блока).
         if (lastCapturedCounter < blockStart)
         {
             const int64_t tail = blockStart - lastCapturedCounter;
@@ -419,18 +273,15 @@ void OscilloscopeComponent::captureNewSamples()
             for (int64_t n = 0; n < tail; ++n)
             {
                 const int64_t absoluteIndex = lastCapturedCounter + n;
-                const int index = static_cast<int> (
-                    absoluteIndex % ClipOnizerAudioProcessor::scopeBufferSize);
+                const int index = static_cast<int> (absoluteIndex % ClipOnizerAudioProcessor::scopeBufferSize);
 
-                blockSamples.push_back (
-                    processor.scopeBuffer[static_cast<size_t> (index)]);
+                blockSamples.push_back (audioProcessor.scopeBuffer[static_cast<size_t> (index)]);
             }
 
             lastCapturedCounter = blockStart;
         }
 
-        if (currentBlockId != std::numeric_limits<int64_t>::min()
-            && ! blockSamples.empty())
+        if (currentBlockId != std::numeric_limits<int64_t>::min() && ! blockSamples.empty())
         {
             previousBlockSamples = blockSamples;
             previousBlockId = currentBlockId;
@@ -440,66 +291,41 @@ void OscilloscopeComponent::captureNewSamples()
         blockSamples.clear();
         lastCapturedCounter = blockStart;
     }
-    // -------------------------------------------------------------------------
-    // COPY NEW SAMPLES
-    // -------------------------------------------------------------------------
 
     const int64_t blockIdBeforeCopy = blockId;
 
     if (lastCapturedCounter < blockStart)
         lastCapturedCounter = blockStart;
 
-    int64_t available =
-        writeCounter - lastCapturedCounter;
+    int64_t available = writeCounter - lastCapturedCounter;
 
     if (available <= 0)
         return;
 
-    // The ring buffer contains only the latest scopeBufferSize samples.
     if (available > ClipOnizerAudioProcessor::scopeBufferSize)
     {
-        lastCapturedCounter =
-            writeCounter
-            - ClipOnizerAudioProcessor::scopeBufferSize;
-
-        available =
-            ClipOnizerAudioProcessor::scopeBufferSize;
-
+        lastCapturedCounter = writeCounter - ClipOnizerAudioProcessor::scopeBufferSize;
+        available = ClipOnizerAudioProcessor::scopeBufferSize;
         blockSamples.clear();
     }
 
-    const size_t maxStored =
-        static_cast<size_t> (
-            ClipOnizerAudioProcessor::scopeBufferSize);
+    const size_t maxStored = static_cast<size_t> (ClipOnizerAudioProcessor::scopeBufferSize);
 
     for (int64_t n = 0; n < available; ++n)
     {
-        const int64_t absoluteIndex =
-            lastCapturedCounter + n;
+        const int64_t absoluteIndex = lastCapturedCounter + n;
+        const int index = static_cast<int> (absoluteIndex % ClipOnizerAudioProcessor::scopeBufferSize);
 
-        const int index =
-            static_cast<int> (
-                absoluteIndex
-                % ClipOnizerAudioProcessor::scopeBufferSize);
-
-        blockSamples.push_back (
-            processor.scopeBuffer[
-                static_cast<size_t> (index)]);
+        blockSamples.push_back (audioProcessor.scopeBuffer[static_cast<size_t> (index)]);
     }
 
     lastCapturedCounter = writeCounter;
 
-    // -------------------------------------------------------------------------
-    // CHECK IF BLOCK CHANGED DURING COPY
-    // -------------------------------------------------------------------------
-
     const int64_t blockIdAfterCopy =
-        processor.scopeBlockId.load (
-            std::memory_order_acquire);
+        audioProcessor.scopeBlockId.load (std::memory_order_acquire);
 
     if (blockIdAfterCopy != blockIdBeforeCopy)
     {
-        // Keep the completed block as the previous waveform.
         if (! blockSamples.empty())
         {
             previousBlockSamples = blockSamples;
@@ -507,1025 +333,118 @@ void OscilloscopeComponent::captureNewSamples()
         }
 
         blockSamples.clear();
-
         currentBlockId = blockIdAfterCopy;
 
         lastCapturedCounter =
-            processor.scopeBlockStartCounter.load (
-                std::memory_order_acquire);
+            audioProcessor.scopeBlockStartCounter.load (std::memory_order_acquire);
     }
-
-    // -------------------------------------------------------------------------
-    // LIMIT MEMORY
-    // -------------------------------------------------------------------------
 
     if (blockSamples.size() > maxStored)
-    {
-        blockSamples.erase (
-            blockSamples.begin(),
-            blockSamples.begin()
-                + static_cast<ptrdiff_t> (
-                    blockSamples.size() - maxStored));
-    }
+        blockSamples.erase (blockSamples.begin(),
+                             blockSamples.begin() + static_cast<ptrdiff_t> (blockSamples.size() - maxStored));
 
     if (previousBlockSamples.size() > maxStored)
-    {
-        previousBlockSamples.erase (
-            previousBlockSamples.begin(),
-            previousBlockSamples.begin()
-                + static_cast<ptrdiff_t> (
-                    previousBlockSamples.size() - maxStored));
-    }
+        previousBlockSamples.erase (previousBlockSamples.begin(),
+                                     previousBlockSamples.begin()
+                                         + static_cast<ptrdiff_t> (previousBlockSamples.size() - maxStored));
 }
 
-
-
-
-
-
-
-
-
-void OscilloscopeComponent::paint (juce::Graphics& g)
+//==============================================================================
+// WAVEFORM DOWNSAMPLING -> compact JSON array of [min, max] pairs
+//==============================================================================
+juce::String ClipOnizerAudioProcessorEditor::buildWaveformJson (const std::vector<ScopeSample>& samples,
+                                                                  int buckets,
+                                                                  double referenceTotalSamples) const
 {
-    auto bounds = getLocalBounds().toFloat();
+    juce::String json = "[";
 
-    g.setColour (ClipOnizerColours::scopeGlassBg);
-    g.fillRoundedRectangle (bounds, 6.0f);
+    if (samples.empty() || buckets <= 0)
+        return json + "]";
 
-    auto plot = bounds.reduced (26.0f, 22.0f);
+    const double totalForMapping = juce::jmax (1.0, referenceTotalSamples);
+    const size_t availableSamples = samples.size();
 
-    const double bpm =
-        juce::jmax (20.0,
-                    processor.currentBpm.load (std::memory_order_acquire));
-
-    const double qnPerBar =
-        juce::jmax (0.25,
-                    processor.currentQuarterNotesPerBar.load (
-                        std::memory_order_acquire));
-
-    constexpr float baseRange = 2.0f;
-
-    const float effectiveRange =
-        juce::jmax (
-            0.05f,
-            baseRange / juce::jmax (0.1f, verticalZoom));
-
-    auto ampToY = [&] (float amp)
+    for (int b = 0; b < buckets; ++b)
     {
-        const float norm =
-            juce::jlimit (-1.0f, 1.0f, amp / effectiveRange);
+        const size_t sampleA = static_cast<size_t> ((static_cast<double> (b) / static_cast<double> (buckets)) * totalForMapping);
 
-        return plot.getCentreY()
-               - norm * (plot.getHeight() * 0.5f);
-    };
+        if (b > 0)
+            json << ",";
 
-    // dB grid
-    for (float db : { -24.0f, -12.0f, -6.0f, 0.0f, 6.0f })
-    {
-        const float y =
-            ampToY (juce::Decibels::decibelsToGain (db));
-
-        if (y >= plot.getY() && y <= plot.getBottom())
+        if (sampleA >= availableSamples)
         {
-            g.setColour (ClipOnizerColours::scopeGrid);
-
-            g.drawHorizontalLine (
-                static_cast<int> (y),
-                plot.getX(), plot.getRight());
-
-            g.setColour (
-                ClipOnizerColours::textAmber.withAlpha (0.55f));
-
-            g.setFont (10.0f);
-
-            g.drawText (
-                (db > 0.0f ? "+" : juce::String())
-                    + juce::String (db, 0) + " dB",
-                static_cast<int> (plot.getRight()) - 58,
-                static_cast<int> (y) - 12,
-                55, 12,
-                juce::Justification::right);
-        }
-    }
-
-    // Musical grid. No playhead access from UI.
-    const double totalQuarterNotes =
-        qnPerBar * static_cast<double> (barsOnScreen);
-
-    const int quarterLineCount =
-        juce::jmax (
-            1,
-            static_cast<int> (std::ceil (totalQuarterNotes)));
-
-    for (int q = 0; q <= quarterLineCount; ++q)
-    {
-        const float x =
-            plot.getX()
-            + (static_cast<float> (q)
-               / static_cast<float> (quarterLineCount))
-              * plot.getWidth();
-
-        const bool isBarLine =
-            std::fmod (static_cast<double> (q), qnPerBar) < 0.001;
-
-        g.setColour (
-            isBarLine
-                ? ClipOnizerColours::textAmber.withAlpha (0.28f)
-                : ClipOnizerColours::scopeGrid);
-
-        g.drawVerticalLine (
-            static_cast<int> (x),
-            plot.getY(), plot.getBottom());
-    }
-
-
-
-
-
-
-
-
-    // -------------------------------------------------------------------------
-    // WAVEFORM
-    //
-    // Previous block stays visible.
-    // Current block progressively overwrites it from left to right.
-    // -------------------------------------------------------------------------
-
-    const int widthPx =
-        static_cast<int> (plot.getWidth());
-
-    if (widthPx > 0)
-    {
-        const float thresholdLin =
-            processor.getThresholdLinear();
-
-        const float knee01 =
-            processor.getSoftnessNormalized();
-
-        const float kneeWidth =
-            knee01 > 0.001f
-                ? juce::jmax (0.0005f, knee01)
-                : 0.0f;
-
-        const float kneeStart =
-            kneeWidth > 0.0f
-                ? juce::jmax (
-                    0.0f,
-                    thresholdLin - kneeWidth)
-                : thresholdLin;
-
-        // ---------------------------------------------------------------------
-        // Expected size of one complete musical block.
-        // ---------------------------------------------------------------------
-
-        const double sampleRate =
-            processor.getSampleRate() > 0.0
-                ? processor.getSampleRate()
-                : 44100.0;
-
-        const double expectedBlockSamples =
-            juce::jmax (
-                1.0,
-                (60.0 / bpm)
-                * sampleRate
-                * totalQuarterNotes);
-
-        // ---------------------------------------------------------------------
-        // Calculate how much of the NEW waveform has already arrived.
-        //
-        // 0.0 = just started
-        // 1.0 = complete block
-        // ---------------------------------------------------------------------
-
-        const float progress =
-            juce::jlimit (
-                0.0f,
-                1.0f,
-                static_cast<float> (
-                    static_cast<double> (blockSamples.size())
-                    / expectedBlockSamples));
-
-        const int newVisibleWidth =
-            juce::jlimit (
-                0,
-                widthPx,
-                static_cast<int> (
-                    progress
-                    * static_cast<float> (widthPx)));
-
-        
-        
-        
-            auto drawWaveform =
-                [&] (const std::vector<ScopeSample>& samples,
-                    int endPx,
-                    double referenceTotalSamples,
-                    bool faded)
-        {
-            if (samples.empty())
-                return;
-
-            if (endPx <= 0)
-                return;
-
-            const size_t availableSamples = samples.size();
-
-            // ВАЖНО: маппинг пиксель -> сэмпл всегда идёт от ФИКСИРОВАННОГО
-            // референсного количества сэмплов (ожидаемая длина всего
-            // музыкального блока), а НЕ от samples.size().
-            //
-            // samples.size() растёт каждый кадр, пока блок ещё пишется,
-            // из-за этого раньше пересчитывался масштаб на каждый repaint —
-            // это и давало эффект "плывёт/сжимается", а потом
-            // "устаканивается", а также мелкий дрейф волны относительно
-            // сетки на каждом проходе. С фиксированным референсом
-            // пиксель X с первого кадра соответствует одному и тому же
-            // абсолютному сэмплу от начала блока и никогда не смещается.
-            const double totalForMapping =
-                juce::jmax (1.0, referenceTotalSamples);
-
-            // --- FIRST PASS: collect per-pixel envelope (min/max Y) ---
-            std::vector<float> pixelMaxY;
-            std::vector<float> pixelMinY;
-            pixelMaxY.reserve (endPx);
-            pixelMinY.reserve (endPx);
-
-            for (int px = 0; px < endPx; ++px)
-            {
-                const size_t sampleA = static_cast<size_t> (
-                    (static_cast<double> (px) / static_cast<double> (widthPx))
-                    * totalForMapping);
-
-                if (sampleA >= availableSamples)
-                {
-                    const float centerY = ampToY (0.0f);
-                    pixelMaxY.push_back (centerY);
-                    pixelMinY.push_back (centerY);
-                    continue;
-                }
-
-                size_t sampleB = static_cast<size_t> (
-                    (static_cast<double> (px + 1) / static_cast<double> (widthPx))
-                    * totalForMapping);
-
-                sampleB = juce::jmax (sampleB, sampleA + static_cast<size_t> (1));
-                sampleB = juce::jmin (sampleB, availableSamples);
-
-                float minV = 1.0e6f;
-                float maxV = -1.0e6f;
-
-                for (size_t s = sampleA; s < sampleB; ++s)
-                {
-                    const auto& sample = samples[s];
-                    const float value = sample.value;
-
-                    minV = juce::jmin (minV, value);
-                    maxV = juce::jmax (maxV, value);
-                }
-
-                pixelMaxY.push_back (ampToY (maxV));
-                pixelMinY.push_back (ampToY (minV));
-            }
-
-            if (pixelMaxY.empty())
-                return;
-
-            // Zone Y positions
-            const float thresholdY     = ampToY (thresholdLin);
-            const float negThresholdY  = ampToY (-thresholdLin);
-            const float kneePosY       = ampToY (kneeStart);
-            const float kneeNegY       = ampToY (-kneeStart);
-
-            const float plotX  = plot.getX();
-            const float scaleX = plot.getWidth() / static_cast<float> (widthPx);
-
-            const juce::Colour green  (ClipOnizerColours::traceNormal);
-            const juce::Colour orange (ClipOnizerColours::traceSoftClip);
-            const juce::Colour red    (ClipOnizerColours::traceHardClip);
-
-            // --- Fill: draw per-zone rectangles clipped to wave extent ---
-            for (size_t i = 0; i < pixelMaxY.size(); ++i)
-            {
-                const float waveTop = pixelMaxY[i];
-                const float waveBot = pixelMinY[i];
-                if (waveTop >= waveBot) continue;
-
-                const float x  = plotX + static_cast<float> (i) * scaleX;
-                const float w  = scaleX + 1.0f;
-                const float a  = faded ? 0.22f : 0.55f;
-
-                // Red zone: above positive threshold
-                {
-                    const float zTop = waveTop;
-                    const float zBot = juce::jmin (waveBot, thresholdY);
-                    if (zTop < zBot)
-                    {
-                        g.setColour (red.withAlpha (a));
-                        g.fillRect (x, zTop, w, zBot - zTop);
-                    }
-                }
-                // Red zone: below negative threshold
-                {
-                    const float zTop = juce::jmax (waveTop, negThresholdY);
-                    const float zBot = waveBot;
-                    if (zTop < zBot)
-                    {
-                        g.setColour (red.withAlpha (a));
-                        g.fillRect (x, zTop, w, zBot - zTop);
-                    }
-                }
-                // Orange zone: between threshold and knee (positive side)
-                {
-                    const float zTop = juce::jmax (waveTop, thresholdY);
-                    const float zBot = juce::jmin (waveBot, kneePosY);
-                    if (zTop < zBot)
-                    {
-                        g.setColour (orange.withAlpha (a));
-                        g.fillRect (x, zTop, w, zBot - zTop);
-                    }
-                }
-                // Orange zone: between threshold and knee (negative side)
-                {
-                    const float zTop = juce::jmax (waveTop, kneeNegY);
-                    const float zBot = juce::jmin (waveBot, negThresholdY);
-                    if (zTop < zBot)
-                    {
-                        g.setColour (orange.withAlpha (a));
-                        g.fillRect (x, zTop, w, zBot - zTop);
-                    }
-                }
-                // Green zone: between the two knee lines
-                {
-                    const float zTop = juce::jmax (waveTop, kneePosY);
-                    const float zBot = juce::jmin (waveBot, kneeNegY);
-                    if (zTop < zBot)
-                    {
-                        g.setColour (green.withAlpha (a));
-                        g.fillRect (x, zTop, w, zBot - zTop);
-                    }
-                }
-            }
-
-            // --- Stroke colour by Y zone ---
-            auto colorByY = [&] (float y) -> juce::Colour
-            {
-                if (y <= thresholdY || y >= negThresholdY)
-                    return red;
-                if (y <= kneePosY || y >= kneeNegY)
-                    return orange;
-                return green;
-            };
-
-            // --- Draw top outline with per-segment colour ---
-            for (size_t i = 1; i < pixelMaxY.size(); ++i)
-            {
-                const float yMid = (pixelMaxY[i - 1] + pixelMaxY[i]) * 0.5f;
-                juce::Colour col = colorByY (yMid);
-                if (faded) col = col.withAlpha (0.30f);
-                g.setColour (col);
-                const float x0 = plotX + static_cast<float> (i - 1) * scaleX;
-                const float x1 = plotX + static_cast<float> (i) * scaleX;
-                g.drawLine (x0, pixelMaxY[i - 1], x1, pixelMaxY[i], 1.0f);
-            }
-
-            // --- Draw bottom outline with per-segment colour ---
-            for (size_t i = 1; i < pixelMinY.size(); ++i)
-            {
-                const float yMid = (pixelMinY[i - 1] + pixelMinY[i]) * 0.5f;
-                juce::Colour col = colorByY (yMid);
-                if (faded) col = col.withAlpha (0.30f);
-                g.setColour (col);
-                const float x0 = plotX + static_cast<float> (i - 1) * scaleX;
-                const float x1 = plotX + static_cast<float> (i) * scaleX;
-                g.drawLine (x0, pixelMinY[i - 1], x1, pixelMinY[i], 1.0f);
-            }
-        };
-
-        // Попередній (завершений) блок — блідий
-        if (! previousBlockSamples.empty())
-        {
-            drawWaveform (previousBlockSamples,
-                        widthPx,
-                        expectedBlockSamples,   // той самий референс, що й сітка/новий блок
-                        true);                  // faded (див. Проблему 1)
+            json << "[0,0]";
+            continue;
         }
 
-        // Новий (поточний) блок — яскравий
-        if (newVisibleWidth > 0 && ! blockSamples.empty())
+        size_t sampleB = static_cast<size_t> ((static_cast<double> (b + 1) / static_cast<double> (buckets)) * totalForMapping);
+        sampleB = juce::jmax (sampleB, sampleA + static_cast<size_t> (1));
+        sampleB = juce::jmin (sampleB, availableSamples);
+
+        float minV = 1.0e6f;
+        float maxV = -1.0e6f;
+
+        for (size_t s = sampleA; s < sampleB; ++s)
         {
-            drawWaveform (blockSamples,
-                        newVisibleWidth,
-                        expectedBlockSamples,
-                        false);
+            const float v = samples[s].value;
+            minV = juce::jmin (minV, v);
+            maxV = juce::jmax (maxV, v);
         }
-    }    
-        
 
-
-    // Threshold lines
-    const float thresholdLin =
-        processor.getThresholdLinear();
-
-    const float knee01 =
-        processor.getSoftnessNormalized();
-
-    const float kneeWidth =
-        knee01 > 0.001f ? juce::jmax (0.0005f, knee01) : 0.0f;
-
-    const float kneeStart =
-        kneeWidth > 0.0f
-            ? juce::jmax (0.0f, thresholdLin - kneeWidth)
-            : thresholdLin;
-
-    const float thresholdY = ampToY (thresholdLin);
-    const float negativeThresholdY = ampToY (-thresholdLin);
-
-    g.setColour (ClipOnizerColours::thresholdLine);
-
-    float dash[2] = { 5.0f, 4.0f };
-
-    g.drawDashedLine (
-        juce::Line<float> (
-            plot.getX(), thresholdY,
-            plot.getRight(), thresholdY),
-        dash, 2, 1.5f);
-
-    g.drawDashedLine (
-        juce::Line<float> (
-            plot.getX(), negativeThresholdY,
-            plot.getRight(), negativeThresholdY),
-        dash, 2, 1.5f);
-
-    if (kneeWidth > 0.0f && kneeStart < thresholdLin)
-    {
-        const float kneePositiveY = ampToY (kneeStart);
-        const float kneeNegativeY = ampToY (-kneeStart);
-
-        g.setColour (
-            ClipOnizerColours::traceSoftClip.withAlpha (0.45f));
-
-        float kneeDash[2] = { 3.0f, 5.0f };
-
-        g.drawDashedLine (
-            juce::Line<float> (
-                plot.getX(), kneePositiveY,
-                plot.getRight(), kneePositiveY),
-            kneeDash, 2, 1.0f);
-
-        g.drawDashedLine (
-            juce::Line<float> (
-                plot.getX(), kneeNegativeY,
-                plot.getRight(), kneeNegativeY),
-            kneeDash, 2, 1.0f);
+        json << "[" << juce::String (minV, 4) << "," << juce::String (maxV, 4) << "]";
     }
 
-    const float thresholdDb =
-        juce::Decibels::gainToDecibels (thresholdLin);
-
-g.setFont (juce::Font (juce::FontOptions (
-    juce::Font::getDefaultMonospacedFontName(),
-    12.0f, juce::Font::bold)));
-
-    g.setColour (ClipOnizerColours::thresholdLine);
-
-    g.drawText (
-        (thresholdDb > 0.0f ? "THRESHOLD +" : "THRESHOLD ")
-        + juce::String (thresholdDb, 1) + " dB",
-        static_cast<int> (plot.getX()),
-        static_cast<int> (thresholdY) - 16,
-        200, 14,
-        juce::Justification::left);
-
-    // Progress indicator.
-    const int percent =
-        ! blockSamples.empty()
-            ? static_cast<int> (
-                juce::jlimit (
-                    0.0,
-                    100.0,
-                    (static_cast<double> (blockSamples.size())
-                     / juce::jmax (
-                         1.0,
-                         (60.0 / bpm)
-                         * processor.getSampleRate()
-                         * totalQuarterNotes))
-                    * 100.0))
-            : 0;
-
-    g.setColour (
-        ClipOnizerColours::textAmber.withAlpha (0.65f));
-
-   g.setFont (juce::Font (juce::FontOptions (
-    juce::Font::getDefaultMonospacedFontName(),
-    10.0f, juce::Font::bold)));
-
-    g.drawText (
-        juce::String (barsOnScreen, 2) + " BAR   "
-            + juce::String (percent) + "%",
-        static_cast<int> (plot.getRight()) - 120, // X-координата (правий край - 120px)
-        
-        static_cast<int> (plot.getBottom()) + 2,
-        120, 14, // ширина 120px, висота 14px
-        juce::Justification::right);
-
-    g.setColour (
-        ClipOnizerColours::textAmber.withAlpha (0.8f));
-
-    g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
-
-    g.drawText (
-        "REAL-TIME OSCILLOSCOPE",
-        bounds.removeFromTop (18).toNearestInt(),
-        juce::Justification::centred);
-
-    g.setColour (ClipOnizerColours::metalEdge);
-
-    g.drawRoundedRectangle (
-        getLocalBounds().toFloat().reduced (1.0f),
-        6.0f, 1.5f);
+    json << "]";
+    return json;
 }
 
-
-
 //==============================================================================
-// ZOOM Tricks
-void ClipOnizerAudioProcessorEditor::drawZoomTicks (juce::Graphics& g)
+// PUSH STATE -> JS  (window.__pluginUpdate(state))
+//==============================================================================
+void ClipOnizerAudioProcessorEditor::pushStateToBrowser()
 {
-    auto bounds = verticalZoomSlider.getBounds().toFloat();
-
-    const double minV = verticalZoomSlider.getMinimum();
-    const double maxV = verticalZoomSlider.getMaximum();
-
-    const float trackTop    = bounds.getY() + 4.0f;
-    const float trackBottom = bounds.getBottom() - 4.0f;
-
-    struct Tick { double value; const char* label; };
-    const Tick ticks[] =
+    auto valFor = [this] (const char* id)
     {
-        { 4.0, "4x" }, { 2.0, "2x" }, { 1.0, "1x" },
-        { 0.5, "0.5x" }, { 0.2, "0.2x" }
+        return (double) audioProcessor.apvts.getRawParameterValue (id)->load();
     };
 
-    g.setColour (ClipOnizerColours::textAmber.withAlpha (0.7f));
-    g.setFont (juce::Font (juce::FontOptions (9.0f)));
+    const double bpm = juce::jmax (20.0, audioProcessor.currentBpm.load (std::memory_order_acquire));
+    const double qnPerBar = juce::jmax (0.25, audioProcessor.currentQuarterNotesPerBar.load (std::memory_order_acquire));
+    const double sampleRate = audioProcessor.getSampleRate() > 0.0 ? audioProcessor.getSampleRate() : 44100.0;
+    const double totalQuarterNotes = qnPerBar * static_cast<double> (barsOnScreen);
+    const double expectedBlockSamples = juce::jmax (1.0, (60.0 / bpm) * sampleRate * totalQuarterNotes);
 
-    for (auto& t : ticks)
-    {
-        const double norm = (t.value - minV) / (maxV - minV);
-        const float y = trackBottom - static_cast<float> (norm) * (trackBottom - trackTop);
+    const float progress = juce::jlimit (0.0f, 1.0f,
+        (float) (static_cast<double> (blockSamples.size()) / expectedBlockSamples));
 
-        g.drawLine (bounds.getX() - 4.0f, y, bounds.getX(), y, 1.0f);
-        g.drawText (t.label,
-                     static_cast<int> (bounds.getX()) - 34, static_cast<int> (y) - 6,
-                     30, 12,
-                     juce::Justification::right);
-    }
-}
-//==============================================================================
-// CLIP INDICATOR
-//==============================================================================
-ClipIndicatorComponent::ClipIndicatorComponent (ClipOnizerAudioProcessor& p)
-    : processor (p)
-{
-    startTimerHz (30);
-}
+    juce::String json;
+    json << "{"
+         << "\"params\":{"
+         <<     "\"input\":"     << juce::String (valFor (ClipOnizerAudioProcessor::idInput), 3)     << ","
+         <<     "\"output\":"    << juce::String (valFor (ClipOnizerAudioProcessor::idOutput), 3)    << ","
+         <<     "\"threshold\":" << juce::String (valFor (ClipOnizerAudioProcessor::idThreshold), 3) << ","
+         <<     "\"softness\":"  << juce::String (valFor (ClipOnizerAudioProcessor::idSoftness), 3)  << ","
+         <<     "\"delta\":"     << (valFor (ClipOnizerAudioProcessor::idDelta) > 0.5 ? "true" : "false")
+         << "},"
+         << "\"clipLevel\":"    << juce::String (audioProcessor.clipIndicatorLevel.load (std::memory_order_acquire), 4) << ","
+         << "\"livePeakPos\":"  << juce::String (audioProcessor.scopeLivePeakPos.load (std::memory_order_acquire), 4)   << ","
+         << "\"livePeakNeg\":"  << juce::String (audioProcessor.scopeLivePeakNeg.load (std::memory_order_acquire), 4)   << ","
+         << "\"bpm\":"          << juce::String (bpm, 2) << ","
+         << "\"qnPerBar\":"     << juce::String (qnPerBar, 3) << ","
+         << "\"barsOnScreen\":" << juce::String (barsOnScreen, 3) << ","
+         << "\"waveform\":{"
+         <<     "\"progress\":" << juce::String (progress, 4) << ","
+         <<     "\"current\":"  << buildWaveformJson (blockSamples, waveformBuckets, expectedBlockSamples)  << ","
+         <<     "\"previous\":" << buildWaveformJson (previousBlockSamples, waveformBuckets, expectedBlockSamples)
+         << "}"
+         << "}";
 
-void ClipIndicatorComponent::paint (juce::Graphics& g)
-{
-    const float target =
-        processor.clipIndicatorLevel.load (std::memory_order_acquire);
-
-    smoothedLevel += (target - smoothedLevel) * 0.2f;
-
-    auto bounds = getLocalBounds().toFloat().reduced (6.0f);
-    auto ledArea = bounds.withHeight (bounds.getHeight() - 14.0f);
-    const auto centre = ledArea.getCentre();
-    const float radius =
-        juce::jmin (ledArea.getWidth(), ledArea.getHeight()) * 0.5f;
-
-    juce::Colour ledColour;
-
-    if (smoothedLevel < 0.05f)
-        ledColour = juce::Colours::green.darker (0.3f);
-    else if (smoothedLevel < 0.3f)
-        ledColour = juce::Colour::fromHSV (
-            juce::jmap (smoothedLevel, 0.05f, 0.3f, 0.33f, 0.16f),
-            0.9f, 1.0f, 1.0f);
-    else if (smoothedLevel < 0.65f)
-        ledColour = juce::Colour::fromHSV (
-            juce::jmap (smoothedLevel, 0.3f, 0.65f, 0.16f, 0.02f),
-            0.95f, 1.0f, 1.0f);
-    else
-        ledColour = juce::Colours::red.brighter (
-            juce::jmin (0.4f, smoothedLevel - 0.65f));
-
-    juce::ColourGradient glow (
-        ledColour.withAlpha (0.85f), centre.x, centre.y,
-        ledColour.withAlpha (0.0f),
-        centre.x, centre.y - radius * 2.4f, false);
-
-    g.setGradientFill (glow);
-
-    g.fillEllipse (
-        centre.x - radius * 1.9f,
-        centre.y - radius * 1.9f,
-        radius * 3.8f,
-        radius * 3.8f);
-
-    g.setColour (ClipOnizerColours::ledOff);
-    g.fillEllipse (ledArea);
-
-    g.setColour (ledColour);
-    g.fillEllipse (ledArea.reduced (radius * 0.15f));
-
-    g.setColour (juce::Colours::white.withAlpha (0.25f));
-    g.drawEllipse (ledArea, 1.5f);
-
-    g.setColour (ClipOnizerColours::textAmber);
-    g.setFont (juce::Font (juce::FontOptions (10.0f, juce::Font::bold)));
-    g.drawText (
-        "CLIP",
-        bounds.removeFromBottom (14.0f).toNearestInt(),
-        juce::Justification::centred);
+    webView.evaluateJavascript ("if (window.__pluginUpdate) window.__pluginUpdate(" + json + ");");
 }
 
 //==============================================================================
-// EDITOR
-//==============================================================================
-ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
-    ClipOnizerAudioProcessor& p)
-    : AudioProcessorEditor (&p),
-      audioProcessor (p),
-      clipShaper (p),
-      oscilloscope (p),
-      clipIndicator (p)
-{
-    setLookAndFeel (&lookAndFeel);
-
-    auto setupKnob =
-        [this] (juce::Slider& s,
-                juce::Label& l,
-                const juce::String& text)
-    {
-        s.setSliderStyle (
-            juce::Slider::RotaryHorizontalVerticalDrag);
-
-        s.setTextBoxStyle (
-            juce::Slider::TextBoxBelow,
-            false, 80, 16);
-
-        s.setRotaryParameters (
-            juce::MathConstants<float>::pi * 1.2f,
-            juce::MathConstants<float>::pi * 2.8f,
-            true);
-
-        s.setDoubleClickReturnValue (true, 0.0);
-        addAndMakeVisible (s);
-
-        l.setText (text, juce::dontSendNotification);
-        l.setJustificationType (juce::Justification::centred);
-        l.setFont (juce::Font (juce::FontOptions (13.0f, juce::Font::bold)));
-
-        addAndMakeVisible (l);
-    };
-
-    setupKnob (inputSlider, inputLabel, "INPUT");
-    setupKnob (thresholdSlider, thresholdLabel, "THRESHOLD");
-    setupKnob (softnessSlider, softnessLabel, "SOFTNESS / KNEE");
-    setupKnob (outputSlider, outputLabel, "OUTPUT");
-
-    inputAttachment =
-        std::make_unique<
-            juce::AudioProcessorValueTreeState::SliderAttachment>
-        (audioProcessor.apvts,
-         ClipOnizerAudioProcessor::idInput,
-         inputSlider);
-
-    thresholdAttachment =
-        std::make_unique<
-            juce::AudioProcessorValueTreeState::SliderAttachment>
-        (audioProcessor.apvts,
-         ClipOnizerAudioProcessor::idThreshold,
-         thresholdSlider);
-
-    softnessAttachment =
-        std::make_unique<
-            juce::AudioProcessorValueTreeState::SliderAttachment>
-        (audioProcessor.apvts,
-         ClipOnizerAudioProcessor::idSoftness,
-         softnessSlider);
-
-    outputAttachment =
-        std::make_unique<
-            juce::AudioProcessorValueTreeState::SliderAttachment>
-        (audioProcessor.apvts,
-         ClipOnizerAudioProcessor::idOutput,
-         outputSlider);
-
-    deltaOnImage  = juce::ImageCache::getFromMemory(BinaryData::DeltaOn_png, BinaryData::DeltaOn_pngSize);
-    deltaOffImage = juce::ImageCache::getFromMemory(BinaryData::DeltaOff_png, BinaryData::DeltaOff_pngSize);
-
-    deltaButton.setClickingTogglesState (true);
-
-    deltaButton.setImages (false, true, true,
-                           deltaOffImage, 1.0f, juce::Colours::transparentBlack,
-                           deltaOffImage, 1.0f, juce::Colours::transparentBlack,
-                           deltaOnImage,  1.0f, juce::Colours::transparentBlack);
-
-    addAndMakeVisible (deltaButton);
-
-    deltaAttachment =
-        std::make_unique<
-            juce::AudioProcessorValueTreeState::ButtonAttachment>
-        (audioProcessor.apvts,
-         ClipOnizerAudioProcessor::idDelta,
-         deltaButton);
-
-    addAndMakeVisible (clipShaper);
-    addAndMakeVisible (oscilloscope);
-    addAndMakeVisible (clipIndicator);
-
-    const char* labels[6] =
-    {
-        "1/4 BAR",
-        "1/2 BAR",
-        "1 BAR",
-        "2 BAR",
-        "4 BAR",
-        "8 BAR"
-    };
-
-    for (int i = 0; i < 6; ++i)
-    {
-        timeScaleButtons[i].setButtonText (labels[i]);
-        timeScaleButtons[i].setClickingTogglesState (true);
-        timeScaleButtons[i].setRadioGroupId (1001);
-
-        timeScaleButtons[i].onClick =
-            [this, i] { timeScaleButtonClicked (i); };
-
-        addAndMakeVisible (timeScaleButtons[i]);
-    }
-
-    timeScaleButtons[2].setToggleState (
-        true, juce::dontSendNotification);
-
-    bpmLabel.setJustificationType (
-        juce::Justification::centredRight);
-
-    bpmLabel.setFont (
-    juce::Font (juce::FontOptions (
-        juce::Font::getDefaultMonospacedFontName(),
-        13.0f, juce::Font::bold)));
-
-    addAndMakeVisible (bpmLabel);
-
-    verticalZoomSlider.setSliderStyle (
-        juce::Slider::LinearVertical);
-
-    verticalZoomSlider.setRange (0.2, 4.0, 0.01);
-    verticalZoomSlider.setDoubleClickReturnValue (true, 1.0);   // <-- ДОДАТИ
-    verticalZoomSlider.setValue (1.0);
-    verticalZoomSlider.setTextBoxStyle (
-        juce::Slider::NoTextBox, false, 0, 0);
-
-    verticalZoomSlider.onValueChange =
-        [this]
-        {
-            const float zoom =
-                static_cast<float> (verticalZoomSlider.getValue());
-
-            oscilloscope.setVerticalZoom (zoom);
-            clipShaper.setVerticalZoom (zoom);  
-            zoomValueLabel.setText (                     
-            juce::String (zoom, 2) + "x",
-            juce::dontSendNotification);
-        };
-
-    addAndMakeVisible (verticalZoomSlider);
-
-    modelLabel.setText (
-        "MODEL-CLIPONIZER No.8",
-        juce::dontSendNotification);
-
-  modelLabel.setFont (
-    juce::Font (juce::FontOptions (17.0f, juce::Font::bold)));
-
-    modelLabel.setJustificationType (
-        juce::Justification::centred);
-
-    addAndMakeVisible (modelLabel);
-
-    subtitleLabel.setText (
-        "DR.DOC SOUNDLAB-EQUIPMENT",
-        juce::dontSendNotification);
-
-    subtitleLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
-    subtitleLabel.setJustificationType (
-        juce::Justification::centred);
-
-    addAndMakeVisible (subtitleLabel);
-
-    titleLabel.setText ("CLIP-TO-ZERO   /   NO LATENCY CLIPPER", juce::dontSendNotification);
-    titleLabel.setFont (juce::Font (juce::FontOptions (13.0f, juce::Font::bold)));
-    titleLabel.setJustificationType (juce::Justification::centred);
-
-    addAndMakeVisible (titleLabel);
-
-    // Завантажуємо фонове зображення з бінарних даних
-    backgroundImage = juce::ImageCache::getFromMemory(BinaryData::background_png, BinaryData::background_pngSize);
-
-    setResizable (true, true);
-    setResizeLimits (980, 660, 1800, 1100); // Розміри плагіна
-    setSize (980, 660);
-
-    startTimerHz (10);
-}
-
-ClipOnizerAudioProcessorEditor::~ClipOnizerAudioProcessorEditor()
-{
-    setLookAndFeel (nullptr);
-}
-
 void ClipOnizerAudioProcessorEditor::timerCallback()
 {
-    bpmLabel.setText (
-        "BPM: "
-        + juce::String (
-            static_cast<int> (
-                std::round (
-                    audioProcessor.currentBpm.load (
-                        std::memory_order_acquire)))),
-        juce::dontSendNotification);
+    captureNewSamples();
+    pushStateToBrowser();
 }
-
-void ClipOnizerAudioProcessorEditor::timeScaleButtonClicked (int index)
-{
-    if (index < 0 || index >= 6)
-        return;
-
-    oscilloscope.setTimeDivision (
-        timeScaleValues[index]);
-}
-
-//==============================================================================
-void ClipOnizerAudioProcessorEditor::paint (juce::Graphics& g)
-{
-    // Малюємо фонове зображення або градієнт як резерв
-    if (backgroundImage.isValid())
-    {
-        g.drawImage(backgroundImage, getLocalBounds().toFloat());
-    }
-    else
-    {
-        juce::ColourGradient bg (
-            ClipOnizerColours::panelLight, 0.0f, 0.0f,
-            ClipOnizerColours::panelDark, 0.0f,
-            static_cast<float> (getHeight()), false);
-
-        g.setGradientFill (bg);
-        g.fillAll();
-    }
-
-    g.setColour (ClipOnizerColours::metalEdge);
-    g.drawRect (getLocalBounds(), 2);
-
-    for (auto corner :
-         { juce::Point<int> (14, 14),
-           juce::Point<int> (getWidth() - 14, 14),
-           juce::Point<int> (14, getHeight() - 14),
-           juce::Point<int> (getWidth() - 14, getHeight() - 14) })
-    {
-        g.setColour (ClipOnizerColours::metalEdge.darker());
-        g.fillEllipse (
-            static_cast<float> (corner.x) - 5.0f,
-            static_cast<float> (corner.y) - 5.0f,
-            10.0f, 10.0f);
-
-        g.setColour (juce::Colours::black.withAlpha (0.5f));
-
-        g.drawLine (
-            static_cast<float> (corner.x) - 3.0f,
-            static_cast<float> (corner.y),
-            static_cast<float> (corner.x) + 3.0f,
-            static_cast<float> (corner.y),
-            1.0f);
-    }
-
-    drawZoomTicks (g);
-}
-
-void ClipOnizerAudioProcessorEditor::resized()
-{
-    auto area = getLocalBounds().reduced (12);
-
-    auto top = area.removeFromTop (70);
-
-    clipIndicator.setBounds (
-        top.removeFromLeft (70));
-
-    auto titleArea = top;
-
-    modelLabel.setBounds (
-        titleArea.removeFromTop (26));
-
-    subtitleLabel.setBounds (
-        titleArea.removeFromTop (18));
-
-    titleLabel.setBounds (titleArea);
-
-    area.removeFromTop (8);
-
-    auto bottom = area.removeFromBottom (150);
-
-    const int knobWidth =
-        bottom.getWidth() / 5;
-
-    auto placeKnob =
-        [] (juce::Rectangle<int> r,
-            juce::Slider& s,
-            juce::Label& l)
-    {
-        l.setBounds (
-            r.removeFromTop (18));
-
-        s.setBounds (
-            r.reduced (8));
-    };
-
-    placeKnob (
-        bottom.removeFromLeft (knobWidth),
-        inputSlider, inputLabel);
-
-    placeKnob (
-        bottom.removeFromLeft (knobWidth),
-        thresholdSlider, thresholdLabel);
-
-    placeKnob (
-        bottom.removeFromLeft (knobWidth),
-        softnessSlider, softnessLabel);
-
-    placeKnob (
-        bottom.removeFromLeft (knobWidth),
-        outputSlider, outputLabel);
-
-    const int buttonW = juce::jmin (110, bottom.getWidth () - 8);
-    const int buttonH = juce::jmin (80, bottom.getHeight () - 8);
-    deltaButton.setBounds (
-        bottom.withSizeKeepingCentre (buttonW, buttonH));
-
-    area.removeFromBottom (8);
-
-    auto scopeRow =
-        area.removeFromBottom (26);
-
-    auto zoomStrip =
-        area.removeFromRight (56);
-
-    area.removeFromRight (6);
-
-    const int half =
-        area.getWidth() / 2;
-
-    auto shaperArea =
-        area.removeFromLeft (half - 6);
-
-    area.removeFromLeft (12);
-
-    auto scopeArea = area;
-
-    clipShaper.setBounds (shaperArea);
-    oscilloscope.setBounds (scopeArea);
-
-    auto zoomValueArea = zoomStrip.removeFromBottom (14);
-    zoomValueLabel.setBounds (zoomValueArea);
-
-    auto zoomSliderArea = zoomStrip.removeFromRight (22);
-    verticalZoomSlider.setBounds (zoomSliderArea);
-
-    auto scopeRowRight = scopeRow;
-
-    scopeRowRight.setX (scopeArea.getX());
-    scopeRowRight.setWidth (scopeArea.getWidth());
-
-    auto timeScaleArea =
-        scopeRowRight.removeFromLeft (
-            static_cast<int> (
-                scopeRowRight.getWidth() * 0.65f));
-
-    const int btnW =
-        juce::jmax (1, timeScaleArea.getWidth() / 6);
-
-    for (int i = 0; i < 6; ++i)
-    {
-        timeScaleButtons[i].setBounds (
-            timeScaleArea.removeFromLeft (btnW)
-                .reduced (2));
-    }
-
-    bpmLabel.setBounds (scopeRowRight);
-}
-
-

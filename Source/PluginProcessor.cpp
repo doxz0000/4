@@ -1,6 +1,8 @@
 /*
     MODEL-CLIPONIZER No.8 — DR.DOC SOUNDLAB-EQUIPMENT
     PluginProcessor.cpp
+
+    Без змін відносно оригіналу.
 */
 
 #include "PluginProcessor.h"
