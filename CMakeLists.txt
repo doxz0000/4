@@ -33,6 +33,8 @@ juce_add_binary_data(ClipOnizerResources
     SOURCES
         Resources/background.png
         Resources/knob.png
+        Resources/DeltaOn.png
+        Resources/DeltaOff.png
 )
 
 target_sources(ClipOnizer

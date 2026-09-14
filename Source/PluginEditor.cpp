@@ -288,9 +288,7 @@ void ClipShaperComponent::paint (juce::Graphics& g)
 
     const float thresholdDb = juce::Decibels::gainToDecibels (thresholdLin);
 
-    g.setFont (juce::Font (juce::FontOptions (
-        juce::Font::getDefaultMonospacedFontName(), 12.0f,
-        juce::Font::bold)));
+    g.setFont (juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold)));
 
     g.drawText (
         (thresholdDb > 0.0f ? "THRESHOLD +" : "THRESHOLD ")
@@ -1226,7 +1224,15 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
          ClipOnizerAudioProcessor::idOutput,
          outputSlider);
 
+    deltaOnImage  = juce::ImageCache::getFromMemory(BinaryData::DeltaOn_png, BinaryData::DeltaOn_pngSize);
+    deltaOffImage = juce::ImageCache::getFromMemory(BinaryData::DeltaOff_png, BinaryData::DeltaOff_pngSize);
+
     deltaButton.setClickingTogglesState (true);
+
+    deltaButton.setImages (false, true, true,
+                           deltaOffImage, 1.0f, juce::Colours::transparentBlack,
+                           deltaOffImage, 1.0f, juce::Colours::transparentBlack,
+                           deltaOnImage,  1.0f, juce::Colours::transparentBlack);
 
     addAndMakeVisible (deltaButton);
 
@@ -1322,15 +1328,9 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (
 
     addAndMakeVisible (subtitleLabel);
 
-    titleLabel.setText (
-        "CLIP-TO-ZERO   /   NO LATENCY CLIPPER",
-        juce::dontSendNotification);
-
-   titleLabel.setFont (
-    juce::Font (juce::FontOptions (13.0f, juce::Font::italic)));
-
-    titleLabel.setJustificationType (
-        juce::Justification::centred);
+    titleLabel.setText ("CLIP-TO-ZERO   /   NO LATENCY CLIPPER", juce::dontSendNotification);
+    titleLabel.setFont (juce::Font (juce::FontOptions (13.0f, juce::Font::bold)));
+    titleLabel.setJustificationType (juce::Justification::centred);
 
     addAndMakeVisible (titleLabel);
 
@@ -1471,8 +1471,10 @@ void ClipOnizerAudioProcessorEditor::resized()
         bottom.removeFromLeft (knobWidth),
         outputSlider, outputLabel);
 
+    const int buttonW = juce::jmin (110, bottom.getWidth () - 8);
+    const int buttonH = juce::jmin (80, bottom.getHeight () - 8);
     deltaButton.setBounds (
-        bottom.reduced (14, 40));
+        bottom.withSizeKeepingCentre (buttonW, buttonH));
 
     area.removeFromBottom (8);
 

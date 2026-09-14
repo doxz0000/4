@@ -145,7 +145,9 @@ private:
 
     juce::Slider inputSlider, outputSlider, thresholdSlider, softnessSlider;
     juce::Label inputLabel, outputLabel, thresholdLabel, softnessLabel;
-    juce::TextButton deltaButton { "DELTA" };
+    juce::ImageButton deltaButton { "deltaButton" };
+    juce::Image deltaOnImage;
+    juce::Image deltaOffImage;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>
         inputAttachment, outputAttachment, thresholdAttachment, softnessAttachment;
