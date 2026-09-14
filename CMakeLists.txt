@@ -32,6 +32,7 @@ juce_generate_juce_header(ClipOnizer)
 juce_add_binary_data(ClipOnizerResources
     SOURCES
         Resources/background.png
+        Resources/knob.png
 )
 
 target_sources(ClipOnizer

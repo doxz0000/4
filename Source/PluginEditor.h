@@ -39,6 +39,8 @@ public:
                            float sliderPos, float minSliderPos, float maxSliderPos,
                            const juce::Slider::SliderStyle style,
                            juce::Slider&) override;
+
+    juce::Image knobImage;
 };
 
 class ClipShaperComponent : public juce::Component,

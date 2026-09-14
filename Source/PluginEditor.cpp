@@ -1,4 +1,4 @@
-/*
+﻿/*
     MODEL-CLIPONIZER No.8 — DR.DOC SOUNDLAB-EQUIPMENT
     PluginEditor.cpp
 */
@@ -22,6 +22,9 @@ ClipOnizerLookAndFeel::ClipOnizerLookAndFeel()
     setColour (juce::TextButton::buttonOnColourId, ClipOnizerColours::traceHardClip);
     setColour (juce::TextButton::textColourOnId, juce::Colours::white);
     setColour (juce::TextButton::textColourOffId, ClipOnizerColours::textAmber);
+
+    // Завантажуємо зображення ручки з бінарних даних
+    knobImage = juce::ImageCache::getFromMemory(BinaryData::knob_png, BinaryData::knob_pngSize);
 }
 
 void ClipOnizerLookAndFeel::drawRotarySlider (
@@ -34,36 +37,52 @@ void ClipOnizerLookAndFeel::drawRotarySlider (
     const auto centre = bounds.getCentre();
     const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
 
-    juce::ColourGradient metalGrad (
-    ClipOnizerColours::panelLight, centre.x, centre.y - radius,
-    ClipOnizerColours::panelDark, centre.x, centre.y + radius, false);
+    // Якщо картинка ручки завантажена - малюємо її з обертанням
+    if (knobImage.isValid())
+    {
+        // Масштабуємо картинку до розміру ручки
+        const float knobSize = radius * 2.0f;
+        const float scale = knobSize / static_cast<float> (knobImage.getWidth());
 
-    g.setGradientFill (metalGrad);
-    g.fillEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f);
+        // Розміри картинки
+        const float imgW = static_cast<float> (knobImage.getWidth());
+        const float imgH = static_cast<float> (knobImage.getHeight());
 
-    g.setColour (ClipOnizerColours::metalEdge);
-    g.drawEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f, 1.5f);
-   
+        // Трансформація: спочатку центруємо картинку в (0,0), потім обертаємо, масштабуємо і переміщуємо в centre
+        juce::AffineTransform transform = juce::AffineTransform::translation (-imgW / 2.0f, -imgH / 2.0f)
+            .rotated (angle)
+            .scaled (scale, scale)
+            .translated (centre.x, centre.y);
 
-    juce::Path arcTrack;
-    arcTrack.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f, rotaryStartAngle, rotaryEndAngle, true);
-    g.setColour (ClipOnizerColours::metalEdge.darker (0.4f));
-    g.strokePath (arcTrack, juce::PathStrokeType (2.5f));
+        // Малюємо обернуту картинку ручки
+        g.drawImageTransformed (knobImage, transform);
+    }
+    else
+    {
+        // Fallback: програмне малювання ручки (якщо картинка не завантажилася)
+        g.setColour (ClipOnizerColours::metalEdge);
+        g.drawEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f, 1.5f);
 
-    juce::Path arcValue;
-    arcValue.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f, rotaryStartAngle, angle, true);
-    g.setColour (ClipOnizerColours::traceSoftClip);
-    g.strokePath (arcValue, juce::PathStrokeType (2.5f));
+        juce::Path arcTrack;
+        arcTrack.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f, rotaryStartAngle, rotaryEndAngle, true);
+        g.setColour (ClipOnizerColours::metalEdge.darker (0.4f));
+        g.strokePath (arcTrack, juce::PathStrokeType (2.5f));
 
-    juce::Path pointer;
-    const float pointerLength = radius * 0.75f;
-    pointer.addRectangle (-1.5f, -pointerLength, 3.0f, pointerLength);
-    pointer.applyTransform (juce::AffineTransform::rotation (angle).translated (centre));
-    g.setColour (ClipOnizerColours::textAmber);
-    g.fillPath (pointer);
+        juce::Path arcValue;
+        arcValue.addCentredArc (centre.x, centre.y, radius - 3.0f, radius - 3.0f, 0.0f, rotaryStartAngle, angle, true);
+        g.setColour (ClipOnizerColours::traceSoftClip);
+        g.strokePath (arcValue, juce::PathStrokeType (2.5f));
 
-    g.setColour (ClipOnizerColours::metalEdge);
-    g.fillEllipse (centre.x - 2.5f, centre.y - 2.5f, 5.0f, 5.0f);
+        juce::Path pointer;
+        const float pointerLength = radius * 0.75f;
+        pointer.addRectangle (-1.5f, -pointerLength, 3.0f, pointerLength);
+        pointer.applyTransform (juce::AffineTransform::rotation (angle).translated (centre));
+        g.setColour (ClipOnizerColours::textAmber);
+        g.fillPath (pointer);
+
+        g.setColour (ClipOnizerColours::metalEdge);
+        g.fillEllipse (centre.x - 2.5f, centre.y - 2.5f, 5.0f, 5.0f);
+    }
 }
 
 //==============================================================================
@@ -763,7 +782,6 @@ void OscilloscopeComponent::paint (juce::Graphics& g)
                 {
                     const auto& sample = samples[s];
                     const float value = sample.value;
-                    const float absValue = std::abs (value);
 
                     minV = juce::jmin (minV, value);
                     maxV = juce::jmax (maxV, value);
@@ -1507,3 +1525,5 @@ void ClipOnizerAudioProcessorEditor::resized()
 
     bpmLabel.setBounds (scopeRowRight);
 }
+
+
