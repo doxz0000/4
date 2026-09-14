@@ -12,8 +12,10 @@
 // ---------------------------------------------------------------------
 function callNative (name, ...args) {
   try {
-    if (window.__JUCE__ && window.__JUCE__.backend && typeof window.__JUCE__.backend.invoke === "function") {
-      return window.__JUCE__.backend.invoke(name, args);
+    // JUCE 9 API: функція getNativeFunction() з juce_interop.js
+    if (typeof getNativeFunction === "function") {
+      getNativeFunction(name)(...args);
+      return Promise.resolve(null);
     }
   } catch (e) { /* ignore - running outside JUCE (e.g. plain browser preview) */ }
   return Promise.resolve(null);

@@ -30,6 +30,7 @@ juce_add_plugin(ClipOnizer
     # juce::juce_gui_extra у target_link_libraries нижче, а на Windows
     # встановіть Microsoft Edge WebView2 SDK / Runtime вручну.
     NEEDS_WEB_BROWSER            TRUE
+    NEEDS_WEBVIEW2               TRUE
 )
 
 # Генеруємо JuceHeader.h для компіляції проєкту
@@ -47,6 +48,7 @@ juce_add_binary_data(ClipOnizerResources
         WebUI/ui.html
         WebUI/style.css
         WebUI/ui.js
+        WebUI/juce_interop.js
 )
 
 target_sources(ClipOnizer
@@ -63,6 +65,7 @@ target_include_directories(ClipOnizer
 target_compile_definitions(ClipOnizer
     PUBLIC
         JUCE_WEB_BROWSER=1
+        JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
         JUCE_DISPLAY_SPLASH_SCREEN=0

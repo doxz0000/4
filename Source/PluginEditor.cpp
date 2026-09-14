@@ -23,13 +23,15 @@ namespace
     {
         using Options = juce::WebBrowserComponent::Options;
 
-        return Options{}
+        return Options{}.withBackend (juce::WebBrowserComponent::Options::Backend::webview2)
             .withNativeIntegrationEnabled()
+            // JUCE 9: другий аргумент — allowedOrigin (CORS); для релізу не потрібен
             .withResourceProvider ([&editor] (const juce::String& url)
                                     {
                                         return editor.getResource (url);
-                                    },
-                                    juce::String ("http://cliponizer.local"))
+                                    })
+            .withWinWebView2Options (juce::WebBrowserComponent::Options::WinWebView2{}
+                .withUserDataFolder (juce::File::getSpecialLocation (juce::File::SpecialLocationType::tempDirectory)))
             .withNativeFunction ("setParam",
                 [&editor] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion completion)
                 { completion (editor.jsSetParameter (args)); })
@@ -58,7 +60,10 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (ClipOnizerAudioP
 
     lastCapturedCounter = audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
 
-    webView.goToURL ("http://cliponizer.local/ui.html");
+    // JUCE 9: resource provider обслуговує корінь getResourceProviderRoot()
+    // (https://juce.backend). Навігація на будь-який інший домен (напр.
+    // http://cliponizer.local) піде в реальну мережу і дасть "Error code: 13".
+    webView.goToURL (juce::WebBrowserComponent::getResourceProviderRoot() + "/ui.html");
 
     setResizable (true, true);
     setResizeLimits (980, 660, 1800, 1100);
@@ -81,47 +86,35 @@ void ClipOnizerAudioProcessorEditor::resized()
 std::optional<juce::WebBrowserComponent::Resource>
 ClipOnizerAudioProcessorEditor::getResource (const juce::String& url)
 {
+    // JUCE 9: провайдер отримує шлях відносно getResourceProviderRoot(),
+    // напр. "/ui.html". Також підтримуємо повні URL (fallback).
     juce::String path = url;
 
     if (auto queryPos = path.indexOfChar ('?'); queryPos >= 0)
         path = path.substring (0, queryPos);
 
-#if defined (CLIPONIZER_WEBUI_DEV_DIR)
-    // ---- DEV MODE: читаємо файли прямо з диска для швидкого редагування ---
+    // Обрізаємо доменну частину, якщо прийшов повний URL
+    if (path.contains ("//"))
+        path = path.fromLastOccurrenceOf ("//", false, false);
+
+    if (path.endsWithIgnoreCase (".html") || path.endsWithIgnoreCase (".css") || path.endsWithIgnoreCase (".js"))
     {
-        juce::File devDir (CLIPONIZER_WEBUI_DEV_DIR);
         juce::String fileName = path.fromLastOccurrenceOf ("/", false, false);
 
-        if (fileName.isEmpty() || path.endsWithIgnoreCase ("cliponizer.local") || path.endsWithIgnoreCase (".local/"))
-            fileName = "ui.html";
+        const void* data = nullptr; int size = 0; const char* mime = "text/html";
 
-        juce::File requested = devDir.getChildFile (fileName);
+        if (fileName == "ui.html" || fileName.isEmpty() || path.endsWithIgnoreCase ("/"))
+        {   data = BinaryData::ui_html;          size = BinaryData::ui_htmlSize;          }
+        else if (fileName == "style.css")
+        {   data = BinaryData::style_css;        size = BinaryData::style_cssSize;        mime = "text/css"; }
+        else if (fileName == "ui.js")
+        {   data = BinaryData::ui_js;            size = BinaryData::ui_jsSize;            mime = "text/javascript"; }
+        else if (fileName == "juce_interop.js")
+        {   data = BinaryData::juce_interop_js;  size = BinaryData::juce_interop_jsSize;  mime = "text/javascript"; }
 
-        if (requested.existsAsFile())
-        {
-            juce::MemoryBlock mb;
-            requested.loadFileAsData (mb);
-
-            const auto ext = requested.getFileExtension();
-            const juce::String mime = ext == ".css" ? "text/css"
-                                     : ext == ".js"  ? "text/javascript"
-                                     : ext == ".png" ? "image/png"
-                                                       : "text/html";
-
-            return makeResource (mb.getData(), (int) mb.getSize(), mime);
-        }
+        if (data != nullptr)
+            return makeResource (data, size, mime);
     }
-#endif
-
-    if (path.endsWithIgnoreCase ("ui.html") || path.endsWithIgnoreCase ("/") || path.isEmpty()
-        || path == "http://cliponizer.local")
-        return makeResource (BinaryData::ui_html, BinaryData::ui_htmlSize, "text/html");
-
-    if (path.endsWithIgnoreCase ("style.css"))
-        return makeResource (BinaryData::style_css, BinaryData::style_cssSize, "text/css");
-
-    if (path.endsWithIgnoreCase ("ui.js"))
-        return makeResource (BinaryData::ui_js, BinaryData::ui_jsSize, "text/javascript");
 
     if (path.endsWithIgnoreCase ("background.png"))
         return makeResource (BinaryData::background_png, BinaryData::background_pngSize, "image/png");
@@ -134,6 +127,10 @@ ClipOnizerAudioProcessorEditor::getResource (const juce::String& url)
 
     if (path.endsWithIgnoreCase ("DeltaOff.png"))
         return makeResource (BinaryData::DeltaOff_png, BinaryData::DeltaOff_pngSize, "image/png");
+
+    // Корінь ("/") — index.html
+    if (path == "/" || path.isEmpty() || path.endsWithIgnoreCase ("/"))
+        return makeResource (BinaryData::ui_html, BinaryData::ui_htmlSize, "text/html");
 
     return std::nullopt;
 }
