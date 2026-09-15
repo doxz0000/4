@@ -1,3 +1,6 @@
+// JUCE 9 interop — ES-модуль, тому ui.js теж завантажується як type="module"
+import { getNativeFunction } from "./juce_interop.js";
+
 // =====================================================================
 // MODEL-CLIPONIZER No.8 — Web UI logic
 //
@@ -60,6 +63,9 @@ let liveDotPosSmoothed = 0;
 let liveDotNegSmoothed = 0;
 let clipLedSmoothed = 0;
 
+// id параметра, який зараз перетягують (щоб 30 Гц push не смикав ручку назад)
+let activeDragParam = null;
+
 // ---------------------------------------------------------------------
 // KNOBS
 // ---------------------------------------------------------------------
@@ -104,6 +110,7 @@ function setupKnobDragging (knobEl, paramId) {
     if (!d) return;
 
     dragging = true;
+    activeDragParam = paramId;
     startY = e.clientY;
     startValue = d.currentValue !== undefined ? d.currentValue : d.value;
 
@@ -131,6 +138,7 @@ function setupKnobDragging (knobEl, paramId) {
   window.addEventListener("mouseup", () => {
     if (!dragging) return;
     dragging = false;
+    if (activeDragParam === paramId) activeDragParam = null;
     callNative("endGesture", paramId);
   });
 
@@ -518,6 +526,9 @@ function renderControls (state) {
   ["input", "threshold", "softness", "output"].forEach((id) => {
     const d = paramDescriptors[id];
     if (!d) return;
+    // Під час перетягування ручки не перекреслюємо локальне значення
+    // значенням, яке ще не підтвердив хост (інакше ручка смикається).
+    if (activeDragParam === id) return;
     d.currentValue = state.params[id];
     setKnobVisual(id, state.params[id]);
   });
