@@ -35,25 +35,10 @@ html, body {
   flex-direction: column;
   padding: 12px;
   border: 2px solid var(--metalEdge);
-  background:
-    linear-gradient(180deg, rgba(61,59,55,0.55), rgba(43,42,40,0.75)),
-    url("Resources/background.png") center / cover no-repeat,
-    linear-gradient(180deg, var(--panelLight), var(--panelDark));
+  background: linear-gradient(180deg, rgb(61 59 55 / 21%), rgb(43 42 40 / 50%)), url(Resources/background.png) center / cover no-repeat, linear-gradient(180deg, var(--panelLight), var(--panelDark));
 }
 
-.corner {
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--metalEdge);
-  filter: brightness(0.65);
-  box-shadow: 1px 1px 0 rgba(0,0,0,0.5);
-}
-#corner-tl { top: 8px;  left: 8px; }
-#corner-tr { top: 8px;  right: 8px; }
-#corner-bl { bottom: 8px; left: 8px; }
-#corner-br { bottom: 8px; right: 8px; }
+
 
 /* ---------------------------------------------------------------- */
 /* TOP BAR                                                           */
@@ -84,23 +69,29 @@ html, body {
   transition: background 0.08s linear;
 }
 #clipLed {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: var(--ledOff);
-  border: 1.5px solid rgba(255,255,255,0.25);
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: var(--ledOff);
+    border: 1.5px solid rgba(255,255,255,0.25);
+    top: -12px;
+    left: -1px;
+    position: relative;
 }
+
 #clipLedLabel {
   margin-top: 4px;
   font-size: 10px;
   font-weight: bold;
   color: var(--textAmber);
+  display: none;
 }
 
 #titleBlock {
   flex: 1;
   text-align: center;
   color: var(--textAmber);
+  display: none;
 }
 #modelLabel    { font-size: 17px; font-weight: bold; }
 #subtitleLabel { font-size: 11px; opacity: 0.9; margin-top: 1px; }
@@ -114,14 +105,14 @@ html, body {
   min-height: 0;
   display: flex;
   gap: 12px;
-  margin-top: 8px;
+  margin-top: 35px;
 }
 
 .scopePanel {
   position: relative;
   flex: 1;
   min-width: 0;
-  background: var(--scopeGlassBg);
+  background: #0c0f0cc2;
   border: 1.5px solid var(--metalEdge);
   border-radius: 6px;
   padding: 26px;
@@ -230,7 +221,7 @@ canvas {
 #bottomRow {
   flex: 0 0 150px;
   display: flex;
-  margin-top: 8px;
+  margin-top: 40px;
 }
 .knobCell {
   flex: 1;
@@ -278,7 +269,9 @@ canvas {
   padding: 0;
 }
 #deltaButton img {
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
+    width: 100%;
+    /* height: 100%; */
+    pointer-events: none;
+    top: -31px;
+    position: relative;
 }
