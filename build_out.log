@@ -1,0 +1,28 @@
+Версия MSBuild 18.10.1-1.26427.6+3cd27c13e для .NET Framework
+
+  Checking File Globs
+  ClipOnizer_rc_lib.vcxproj -> F:\Project Python\6 - VST\4\build\ClipOnizer_rc_lib.dir\Release\ClipOnizer_rc_lib.lib
+  Building VST3 manifest helper for ClipOnizer
+  -- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.19045.
+  -- Configuring done (0.1s)
+  -- Generating done (0.1s)
+  -- Build files have been written to: F:/Project Python/6 - VST/4/build/vst3_helpers/ClipOnizer
+  ╨Т╨╡╤А╤Б╨╕╤П MSBuild 18.10.1-1.26427.6+3cd27c13e ╨┤╨╗╤П .NET Framework
+  
+    vst3_helper.vcxproj -> F:\Project Python\6 - VST\4\build\vst3_helpers\ClipOnizer\vst3_helper.exe
+  ClipOnizerResources.vcxproj -> F:\Project Python\6 - VST\4\build\Release\ClipOnizerResources.lib
+  PluginEditor.cpp
+  ClipOnizer.vcxproj -> F:\Project Python\6 - VST\4\build\ClipOnizer_artefacts\Release\CLIPONIZER No.8_SharedCode.lib
+     Создается библиотека F:/Project Python/6 - VST/4/build/ClipOnizer_artefacts/Release/VST3/CLIPONIZER No.8.lib и объект F:/Project Python/6 - VST/4/build/ClipOnizer_artefacts/Release/VST3/CLIPONIZER No.8.exp
+  Создание кода
+  Создание кода завершено
+  ClipOnizer_VST3.vcxproj -> F:\Project Python\6 - VST\4\build\ClipOnizer_artefacts\Release\VST3\CLIPONIZER No.8.vst3\Contents\x86_64-win\CLIPONIZER No.8.vst3
+  removing moduleinfo.json
+  creating F:/Project Python/6 - VST/4/build/ClipOnizer_artefacts/Release/VST3/CLIPONIZER No.8.vst3/Contents/Resources/moduleinfo.json
+  -- Destination C:\Program Files\Common Files/VST3/CLIPONIZER No.8.vst3 exists, overwriting
+  -- Installing: C:\Program Files\Common Files/VST3/CLIPONIZER No.8.vst3
+  -- Installing: C:\Program Files\Common Files/VST3/CLIPONIZER No.8.vst3/Contents
+  -- Installing: C:\Program Files\Common Files/VST3/CLIPONIZER No.8.vst3/Contents/Resources
+  -- Installing: C:\Program Files\Common Files/VST3/CLIPONIZER No.8.vst3/Contents/Resources/moduleinfo.json
+  -- Installing: C:\Program Files\Common Files/VST3/CLIPONIZER No.8.vst3/Contents/x86_64-win
+  -- Installing: C:\Program Files\Common Files/VST3/CLIPONIZER No.8.vst3/Contents/x86_64-win/CLIPONIZER No.8.vst3

@@ -65,8 +65,11 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (ClipOnizerAudioP
     // http://cliponizer.local) піде в реальну мережу і дасть "Error code: 13".
     webView.goToURL (juce::WebBrowserComponent::getResourceProviderRoot() + "/ui.html");
 
-    setResizable (true, true);
-    setResizeLimits (980, 660, 1800, 1100);
+    // Фіксований стандартний розмір — масштабування/зміну розміру вимкнено.
+    // setResizable(false) прибирає перетягування країв і кутовий хендл,
+    // а ліміти мін=макс не дають хосту (DAW) змінити розмір програмно.
+    setResizable (false, false);
+    setResizeLimits (980, 660, 980, 660);
     setSize (980, 660);
 
     startTimerHz (30);

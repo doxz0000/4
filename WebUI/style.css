@@ -24,6 +24,7 @@ html, body {
   font-family: "Segoe UI", Arial, sans-serif;
   -webkit-user-select: none;
   user-select: none;
+  text-shadow: 2px 2px black;
 }
 
 #app {
@@ -36,7 +37,7 @@ html, body {
   border: 2px solid var(--metalEdge);
   background:
     linear-gradient(180deg, rgba(61,59,55,0.55), rgba(43,42,40,0.75)),
-    url("background.png") center / cover no-repeat,
+    url("Resources/background.png") center / cover no-repeat,
     linear-gradient(180deg, var(--panelLight), var(--panelDark));
 }
 

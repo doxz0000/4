@@ -1,1 +1,3 @@
 build/
+# junction на ../Resources для прев'ю в браузері — не комітити вміст
+WebUI/Resources/

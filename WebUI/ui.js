@@ -168,7 +168,7 @@ function setupDeltaButton () {
 
   btn.addEventListener("click", () => {
     deltaState = !deltaState;
-    img.src = deltaState ? "DeltaOn.png" : "DeltaOff.png";
+    img.src = deltaState ? "Resources/DeltaOn.png" : "Resources/DeltaOff.png";
     callNative("beginGesture", "delta");
     callNative("setParam", "delta", deltaState);
     callNative("endGesture", "delta");
@@ -535,7 +535,7 @@ function renderControls (state) {
 
   if (state.params.delta !== deltaState) {
     deltaState = state.params.delta;
-    document.getElementById("deltaImg").src = deltaState ? "DeltaOn.png" : "DeltaOff.png";
+    document.getElementById("deltaImg").src = deltaState ? "Resources/DeltaOn.png" : "Resources/DeltaOff.png";
   }
 }
 
@@ -585,7 +585,7 @@ async function init () {
     });
 
     deltaState = !!initial.delta;
-    document.getElementById("deltaImg").src = deltaState ? "DeltaOn.png" : "DeltaOff.png";
+    document.getElementById("deltaImg").src = deltaState ? "Resources/DeltaOn.png" : "Resources/DeltaOff.png";
 
     barsOnScreen = initial.barsOnScreen || 1.0;
   } else {
