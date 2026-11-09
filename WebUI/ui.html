@@ -28,7 +28,7 @@
         <div class="thresholdLabel" id="shaperThresholdLabel"></div>
       </div>
 
-      <div class="scopePanel" id="scopePanelEl">
+      <div class="scopePanel2" id="scopePanelEl">
         <div class="panelTitle">REAL-TIME OSCILLOSCOPE</div>
         <canvas id="scopeCanvas"></canvas>
         <div class="thresholdLabel" id="scopeThresholdLabel"></div>
@@ -54,24 +54,29 @@
 
     <div id="bottomRow">
       <div class="knobCell">
-        <div class="knobLabel">INPUT</div>
+        <div class="knobLabel"><!-- INPUT--></div>  
         <div class="knob" id="knobInput" data-param="input"><img class="knobImg" src="Resources/knob.png" draggable="false"></div>
         <div class="knobValue" id="valInput">0.0 dB</div>
       </div>
       <div class="knobCell">
-        <div class="knobLabel">THRESHOLD</div>
+        <div class="knobLabel"><!-- OUTPUT--></div>
+        <div class="knob" id="knobOutput" data-param="output"><img class="knobImg" src="Resources/knob.png" draggable="false"></div>
+        <div class="knobValue" id="valOutput">0.0 dB</div>
+      </div>
+      <div class="knobCell">
+        <div class="knobLabel"><!-- THRESHOLD--></div>
         <div class="knob" id="knobThreshold" data-param="threshold"><img class="knobImg" src="Resources/knob.png" draggable="false"></div>
         <div class="knobValue" id="valThreshold">0.0 dB</div>
       </div>
       <div class="knobCell">
-        <div class="knobLabel">SOFTNESS / KNEE</div>
+        <div class="knobLabel"><!-- SOFTNESS / KNEE--></div>
         <div class="knob" id="knobSoftness" data-param="softness"><img class="knobImg" src="Resources/knob.png" draggable="false"></div>
         <div class="knobValue" id="valSoftness">20.0 %</div>
       </div>
       <div class="knobCell">
-        <div class="knobLabel">OUTPUT</div>
-        <div class="knob" id="knobOutput" data-param="output"><img class="knobImg" src="Resources/knob.png" draggable="false"></div>
-        <div class="knobValue" id="valOutput">0.0 dB</div>
+        <div class="knobLabel"><!-- Saturator--></div>
+        <div class="knob" id="knobSaturator" data-param="saturator"><img class="knobImg" src="Resources/knob.png" draggable="false"></div>
+        <div class="knobValue" id="valSaturator">0.0 dB</div>
       </div>
       <div class="knobCell" id="cellDelta">
         <button id="deltaButton"><img id="deltaImg" src="Resources/DeltaOff.png" draggable="false"></button>
