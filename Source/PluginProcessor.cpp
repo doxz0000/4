@@ -86,6 +86,8 @@ void ClipOnizerAudioProcessor::prepareToPlay (double sampleRate, int)
 
     livePeakPosEnvelope = 0.0f;
     livePeakNegEnvelope = 0.0f;
+    livePeakPosHoldSamples = 0;
+    livePeakNegHoldSamples = 0;
     scopeLivePeakPos.store (0.0f, std::memory_order_release);
     scopeLivePeakNeg.store (0.0f, std::memory_order_release);
 
@@ -346,11 +348,12 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             if (ch == 0)
             {
                 // "BEFORE" scope: signal before saturator + clipper.
-                // "AFTER" panel: signal after saturator + clipper.
+                // "AFTER" panel: signal after saturator + clipper,
+                // or the DELTA (dry - clipped) when Delta monitoring is on.
                 // Zone colouring (scopeClipAmount) is still computed from sat,
                 // so the BEFORE view shows what will get clipped.
                 scopeValue = dry;
-                scopeOut = clipped;
+                scopeOut = deltaOn ? (dry - clipped) : clipped;
 
                 // Live peaks are pre-saturation: the shaper panel draws
                 // the combined saturator+clipper curve.
@@ -376,9 +379,10 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 }
                 else if (knee01 > 0.001f)
                 {
-                    const float kneeWidth = juce::jmax (0.0005f, knee01);
-                    const float kneeStart = juce::jmax (0.0f,
-                                                        thresholdLin - kneeWidth);
+                    // Same relative knee as ClipShaper::process
+                    const float kneeWidth = juce::jmax (1.0e-6f,
+                                                        juce::jmin (1.0f, knee01) * thresholdLin);
+                    const float kneeStart = thresholdLin - kneeWidth;
 
                     if (absSat > kneeStart)
                     {
@@ -387,8 +391,7 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                 0.001f,
                                 0.849f,
                                 (absSat - kneeStart)
-                                / juce::jmax (0.0005f,
-                                              thresholdLin - kneeStart));
+                                / kneeWidth);
                     }
                 }
             }
@@ -488,38 +491,48 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     clipIndicatorLevel.store (clipEnvelope, std::memory_order_release);
 
     // --- нове: peak-envelope для точки Clip Shaper ---
-    constexpr float liveRelease = 0.02f;
-    constexpr int holdBlocks = 1;   // сколько вызовов processBlock держать пик (подбери по ощущениям)
+    // Миттєва атака, коротке утримання (щоб UI на 30 Гц не пропустив пік),
+    // швидкий спад — у секундах, не залежить від розміру буфера.
+    // Так точка йде за реальним рівнем і падає в зелену зону між ударами.
+    {
+        constexpr double liveHoldSeconds    = 0.05;
+        constexpr double liveReleaseSeconds = 0.12;
 
-    if (blockPeakPos >= livePeakPosEnvelope)
-    {
-        livePeakPosEnvelope = blockPeakPos;
-        livePeakPosHoldCounter = holdBlocks;
-    }
-    else if (livePeakPosHoldCounter > 0)
-    {
-        --livePeakPosHoldCounter;
-    }
-    else
-    {
-        livePeakPosEnvelope += (blockPeakPos - livePeakPosEnvelope) * liveRelease;
-    }
-    scopeLivePeakPos.store (livePeakPosEnvelope, std::memory_order_release);
+        const int holdSamples = static_cast<int> (liveHoldSeconds * currentSampleRate);
+        const float releaseCoeff = static_cast<float> (
+            std::exp (-static_cast<double> (numSamples)
+                      / (liveReleaseSeconds * currentSampleRate)));
 
-    if (blockPeakNeg <= livePeakNegEnvelope)
-    {
-        livePeakNegEnvelope = blockPeakNeg;
-        livePeakNegHoldCounter = holdBlocks;
+        if (blockPeakPos >= livePeakPosEnvelope)
+        {
+            livePeakPosEnvelope = blockPeakPos;
+            livePeakPosHoldSamples = holdSamples;
+        }
+        else if (livePeakPosHoldSamples > 0)
+        {
+            livePeakPosHoldSamples -= numSamples;
+        }
+        else
+        {
+            livePeakPosEnvelope = blockPeakPos + (livePeakPosEnvelope - blockPeakPos) * releaseCoeff;
+        }
+        scopeLivePeakPos.store (livePeakPosEnvelope, std::memory_order_release);
+
+        if (blockPeakNeg <= livePeakNegEnvelope)
+        {
+            livePeakNegEnvelope = blockPeakNeg;
+            livePeakNegHoldSamples = holdSamples;
+        }
+        else if (livePeakNegHoldSamples > 0)
+        {
+            livePeakNegHoldSamples -= numSamples;
+        }
+        else
+        {
+            livePeakNegEnvelope = blockPeakNeg + (livePeakNegEnvelope - blockPeakNeg) * releaseCoeff;
+        }
+        scopeLivePeakNeg.store (livePeakNegEnvelope, std::memory_order_release);
     }
-    else if (livePeakNegHoldCounter > 0)
-    {
-        --livePeakNegHoldCounter;
-    }
-    else
-    {
-        livePeakNegEnvelope += (blockPeakNeg - livePeakNegEnvelope) * liveRelease;
-    }
-    scopeLivePeakNeg.store (livePeakNegEnvelope, std::memory_order_release);
 
 }
 

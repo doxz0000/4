@@ -48,8 +48,9 @@ function clipShaperProcess (x, thresholdLin, knee01) {
     return [sign * thresholdLin, 1];
   }
 
-  const kneeWidth = Math.max(0.0005, knee01);
-  const kneeStart = Math.max(0, thresholdLin - kneeWidth);
+  // Коліно відносне до порогу (як у C++): стеля завжди = thresholdLin
+  const kneeWidth = Math.max(1e-6, Math.min(1, knee01) * thresholdLin);
+  const kneeStart = thresholdLin - kneeWidth;
 
   if (absX <= kneeStart) return [x, 0];
 
@@ -78,6 +79,21 @@ function saturatorProcess (x, thresholdLin, amount01) {
 // Повна крива: SATURATOR -> CLIPPER
 function chainProcess (x, thresholdLin, knee01, sat01) {
   return clipShaperProcess(saturatorProcess(x, thresholdLin, sat01), thresholdLin, knee01);
+}
+
+// Початок коліна (лінійно) — те саме правило, що в C++ і scopeGeometry
+function kneeStartFor (thresholdLin, knee01) {
+  if (knee01 < 0.001) return thresholdLin;
+  return thresholdLin - Math.max(1e-6, Math.min(1, knee01) * thresholdLin);
+}
+
+// Зона для вхідного рівня (по сигналу на вході кліпера, як scopeClipAmount у C++):
+// 0 = зелена (лінійно), 1 = м'яке коліно, 2 = кліпінг (за порогом)
+function zoneFor (amp, thresholdLin, knee01, sat01) {
+  const s = Math.abs(saturatorProcess(amp, thresholdLin, sat01));
+  if (s > thresholdLin) return 2;
+  if (s > kneeStartFor(thresholdLin, knee01)) return 1;
+  return 0;
 }
 
 // ---------------------------------------------------------------------
@@ -233,10 +249,20 @@ function setupZoomSlider () {
   const slider = document.getElementById("zoomSlider");
   const label = document.getElementById("zoomValueLabel");
 
-  slider.addEventListener("input", () => {
+  const DEFAULT_ZOOM = 1.0;
+
+  const applyZoom = () => {
     verticalZoom = parseFloat(slider.value);
     label.textContent = verticalZoom.toFixed(2) + "x";
     requestRender();
+  };
+
+  slider.addEventListener("input", applyZoom);
+
+  // Подвійний клік — скидання масштабу до 1x
+  slider.addEventListener("dblclick", () => {
+    slider.value = DEFAULT_ZOOM;
+    applyZoom();
   });
 }
 
@@ -249,6 +275,7 @@ const COLORS = {
   soft:   "#ffb347",
   hard:   "#ff4d4d",
   thresh: "#e0d9c0",
+  zeroDb: "#ff3b3b",
 };
 const LABEL_COLOR = "rgba(232,195,122,0.55)";
 const DB_MARKS = [-24, -12, -6, 0, 6];
@@ -261,6 +288,7 @@ function readColors () {
   COLORS.soft   = get("--traceSoftClip", COLORS.soft);
   COLORS.hard   = get("--traceHardClip", COLORS.hard);
   COLORS.thresh = get("--thresholdLine", COLORS.thresh);
+  COLORS.zeroDb = get("--zeroDbLine",    COLORS.zeroDb);
 }
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -391,7 +419,8 @@ function buildShaperLayer (view, thresholdDb, knee01, sat01, outGain) {
     [g, -g].forEach((v) => {
       const x = crisp(ampToX(v)), y = crisp(ampToY(v));
       ctx.moveTo(x, 0); ctx.lineTo(x, h);
-      ctx.moveTo(0, y); ctx.lineTo(w, y);
+      // горизонтальну 0 dB малює червоним under-шар — тут не перекриваємо
+      if (db !== 0) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
     });
   });
   ctx.stroke();
@@ -411,9 +440,9 @@ function buildShaperLayer (view, thresholdDb, knee01, sat01, outGain) {
 
   for (let i = 0; i <= steps; i++) {
     const xin = -range + (i / steps) * 2 * range;
-    const [out, clip] = chainProcess(xin, thresholdLin, knee01, sat01);
+    const [out] = chainProcess(xin, thresholdLin, knee01, sat01);
     const x = ampToX(xin), y = ampToY(out * outGain);
-    const zone = clip < 0.001 ? 0 : (clip < 0.85 ? 1 : 2);
+    const zone = zoneFor(xin, thresholdLin, knee01, sat01);
 
     if (i === 0) {
       path.moveTo(x, y);
@@ -474,7 +503,8 @@ function renderShaper (state) {
   // Хвиля, зони та пунктири масштабуються на outGain; dB-сітка — ні.
   const geo = { ...baseGeo, ampToY: (a) => baseGeo.ampToY(a * outGain) };
   const geomKey = `${geo.thresholdDb}|${state.params.softness}|${outGain}|${verticalZoom}|${view.sizeKey}`;
-  const underKey = `${geomKey}|${barsOnScreen}|${state.qnPerBar}|${wf.prevId}`;
+  const deltaOn = !!state.params.delta;
+  const underKey = `${geomKey}|${barsOnScreen}|${state.qnPerBar}|${wf.prevId}|${deltaOn}`;
 
   if (geomKey !== outGeomKey || !outOver) {
     let label = null;
@@ -498,23 +528,28 @@ function renderShaper (state) {
   drawPlayhead(ctx, wf.outCurrent, wf.progress, w, h);
 
   // --- передавальна крива поверх, напівпрозоро ---
-  ctx.globalAlpha = SHAPER_CURVE_ALPHA;
-  blit(view, shaperLayer);
-  ctx.globalAlpha = 1.0;
+  // У Delta-режимі крива й live-точки не стосуються дельти — не малюємо.
+  if (!deltaOn) {
+    ctx.globalAlpha = SHAPER_CURVE_ALPHA;
+    blit(view, shaperLayer);
+    ctx.globalAlpha = 1.0;
+  }
 
   blit(view, outOver);
 
+  if (deltaOn) return;
+
   // live dots
-  liveDotPosSmoothed += (state.livePeakPos - liveDotPosSmoothed) * 0.6;
-  liveDotNegSmoothed += (state.livePeakNeg - liveDotNegSmoothed) * 0.6;
+  liveDotPosSmoothed += ((Number(state.livePeakPos) || 0) - liveDotPosSmoothed) * 0.5;
+  liveDotNegSmoothed += ((Number(state.livePeakNeg) || 0) - liveDotNegSmoothed) * 0.5;
 
   const range = verticalRange();
   const cx = w / 2, cy = h / 2;
   const drawDot = (amp) => {
-    const [outAmp, clipAmt] = chainProcess(amp, thresholdLin, knee01, sat01);
+    const [outAmp] = chainProcess(amp, thresholdLin, knee01, sat01);
     const x = cx + Math.min(1, Math.max(-1, amp / range)) * (w / 2);
     const y = cy - Math.min(1, Math.max(-1, outAmp * outGain / range)) * (h / 2);
-    const col = clipAmt < 0.001 ? COLORS.normal : (clipAmt < 0.85 ? COLORS.soft : COLORS.hard);
+    const col = zoneColor(zoneFor(amp, thresholdLin, knee01, sat01));
 
     ctx.fillStyle = col;
     ctx.globalAlpha = 0.22;
@@ -617,8 +652,8 @@ function scopeGeometry (state, h) {
   const thresholdDb = state.params.threshold;
   const thresholdLin = dbToGain(thresholdDb);
   const knee01 = clamp01(state.params.softness / 100);
-  const kneeWidth = knee01 > 0.001 ? Math.max(0.0005, knee01) : 0.0;
-  const kneeStart = kneeWidth > 0 ? Math.max(0, thresholdLin - kneeWidth) : thresholdLin;
+  const kneeStart = kneeStartFor(thresholdLin, knee01);
+  const kneeWidth = thresholdLin - kneeStart;
   const range = verticalRange();
   const cy = h / 2;
   const ampToY = (amp) => cy - Math.min(1, Math.max(-1, amp / range)) * cy;
@@ -637,10 +672,21 @@ function buildUnderLayer (layer, view, state, geo, n, previousArr, gridAmpToY) {
   ctx.lineWidth = 1;
   ctx.beginPath();
   DB_MARKS.forEach((db) => {
+    if (db === 0) return;
     const y = gridY(dbToGain(db));
     if (y >= 0 && y <= h) { ctx.moveTo(0, crisp(y)); ctx.lineTo(w, crisp(y)); }
   });
   ctx.stroke();
+
+  // 0 dBFS — червона лінія (+0 і −0 dB)
+  ctx.strokeStyle = COLORS.zeroDb;
+  ctx.beginPath();
+  [1, -1].forEach((v) => {
+    const y = gridY(v);
+    if (y >= 0 && y <= h) { ctx.moveTo(0, crisp(y)); ctx.lineTo(w, crisp(y)); }
+  });
+  ctx.stroke();
+
   drawDbLabels(ctx, w, h, gridY);
 
   // musical grid
@@ -799,7 +845,16 @@ function renderControls (state) {
     deltaState = state.params.delta;
     document.getElementById("deltaImg").src = deltaState ? "Resources/DeltaOn.png" : "Resources/DeltaOff.png";
   }
+
+  // Заголовок панелі "ПІСЛЯ": у Delta-режимі там показується дельта.
+  const titleDelta = !!state.params.delta;
+  if (titleDelta !== shaperTitleDelta) {
+    shaperTitleDelta = titleDelta;
+    const t = document.getElementById("shaperTitle");
+    if (t) t.textContent = titleDelta ? "AFTER · DELTA" : "AFTER · CLIP SHAPER";
+  }
 }
+let shaperTitleDelta = false;
 
 // ---------------------------------------------------------------------
 // MAIN RENDER — не частіше одного разу на кадр дисплея (rAF).

@@ -20,7 +20,7 @@ struct ScopeSample
 {
     float value = 0.0f;
     float clipAmount = 0.0f;
-    float out = 0.0f;   // сигнал ПІСЛЯ сатуратора + кліпера (без output gain / delta)
+    float out = 0.0f;   // сигнал ПІСЛЯ сатуратора + кліпера (без output gain); у Delta-режимі — дельта (dry - clipped)
 };
 
 class ClipShaper
@@ -39,8 +39,10 @@ public:
             return { sign * thresholdLin, 1.0f };
         }
 
-        const float kneeWidth = juce::jmax (0.0005f, knee01);
-        const float kneeStart = juce::jmax (0.0f, thresholdLin - kneeWidth);
+        // Knee width is relative to the threshold, so the ceiling is always
+        // exactly thresholdLin and there is a linear zone at any threshold.
+        const float kneeWidth = juce::jmax (1.0e-6f, juce::jmin (1.0f, knee01) * thresholdLin);
+        const float kneeStart = thresholdLin - kneeWidth;
 
         if (absX <= kneeStart)
             return { x, 0.0f };
@@ -305,8 +307,8 @@ private:
     float livePeakPosEnvelope = 0.0f;
     float livePeakNegEnvelope = 0.0f;
     uint32_t lastScopeConfigVersion = 0;
-    int livePeakPosHoldCounter = 0;
-    int livePeakNegHoldCounter = 0;
+    int livePeakPosHoldSamples = 0;     // hold time left (samples) for the Clip Shaper dots
+    int livePeakNegHoldSamples = 0;
 
     // Состояние детектора луп-цикла — ДОЛЖНО быть per-instance,
     // а не static thread_local (иначе несколько инстансов плагина
