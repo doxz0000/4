@@ -11,6 +11,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "WebViewWarmup.h"
 #include <array>
 #include <atomic>
 #include <utility>
@@ -336,6 +337,10 @@ private:
     void resetScopeWriter() noexcept;
     void flushScopeBucket() noexcept;
     void startScopeBlock (int64_t blockId) noexcept;
+
+    // Запускає браузерний процес WebView2 ще до відкриття вікна плагіна,
+    // щоб редактор з'являвся швидше (див. WebViewWarmup.h).
+    cliponizer::WebViewWarmup webViewWarmup;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipOnizerAudioProcessor)
 };

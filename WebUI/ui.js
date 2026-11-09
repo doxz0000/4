@@ -965,18 +965,34 @@ async function init () {
   revealWhenLoaded();
 }
 
-// Показуємо UI, коли картинки (фон, ручки) завантажені — одним кадром.
-// Страховка: не довше ніж 600 мс, щоб ніколи не лишитись з порожнім вікном.
+// Поки сторінка вантажиться, сам WebView прихований на боці C++, а
+// користувач бачить нативний фон плагіна (той самий background.png).
+// Коли картинки (фон, ручки, Delta) декодовані — кажемо C++ "uiShown",
+// і він показує WebView одним кадром, без білого/порожнього проміжку.
+// requestAnimationFrame тут не використовуємо: у прихованому WebView2
+// він може не спрацювати. Страховка: не довше ніж 600 мс.
 function revealWhenLoaded () {
-  const app = document.getElementById("app");
-  const show = () => requestAnimationFrame(() => app.classList.add("ready"));
-
-  if (document.readyState === "complete") { show(); return; }
+  document.getElementById("app").classList.add("ready");
 
   let done = false;
-  const once = () => { if (!done) { done = true; show(); } };
-  window.addEventListener("load", once, { once: true });
-  setTimeout(once, 600);
+  const notify = () => {
+    if (done) return;
+    done = true;
+    callNative("uiShown").catch(() => {});
+  };
+
+  const decodeImage = (src) => {
+    const img = new Image();
+    img.src = src;
+    return (img.decode ? img.decode() : Promise.resolve()).catch(() => {});
+  };
+
+  const pending = [...document.images].map((img) =>
+    (img.decode ? img.decode() : Promise.resolve()).catch(() => {}));
+  pending.push(decodeImage("Resources/background.png"));
+
+  Promise.all(pending).then(notify);
+  setTimeout(notify, 600);
 }
 
 // Вимикаємо стандартне контекстне меню WebView2 (правий клік).

@@ -55,6 +55,7 @@ target_sources(ClipOnizer
     PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
+        Source/WebViewWarmup.cpp
 )
 
 target_include_directories(ClipOnizer

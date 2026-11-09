@@ -40,12 +40,9 @@ html, body {
   padding: 12px;
   border: 2px solid var(--metalEdge);
   background: linear-gradient(180deg, rgb(61 59 55 / 21%), rgb(43 42 40 / 50%)), url(Resources/background.png) center / cover no-repeat, linear-gradient(180deg, var(--panelLight), var(--panelDark));
-  /* Показуємо UI одним кадром, коли фон, ручки і стан готові
-     (клас .ready ставить ui.js) — без поетапного "проявлення". */
-  opacity: 0;
-  transition: opacity 0.12s ease-out;
+  /* Без fade-in: поки сторінка не готова, WebView прихований на боці C++
+     (див. uiShown у PluginEditor.cpp), а під ним видно нативний фон. */
 }
-#app.ready { opacity: 1; }
 
 
 

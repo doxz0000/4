@@ -5,6 +5,7 @@
 
 #include "PluginEditor.h"
 #include "BinaryData.h"
+#include "WebViewWarmup.h"
 #include <cmath>
 
 namespace
@@ -21,24 +22,6 @@ namespace
     // Має збігатися з --bootBg у style.css.
     const juce::Colour webViewBootColour { 0xff111610 };
 
-    // Постійна папка даних WebView2 (кеш, профіль). Раніше був корінь %TEMP%,
-    // який часто великий і "засмічений" — холодний старт там повільніший.
-    // Спільна папка для всіх екземплярів плагіна дозволяє WebView2
-    // перевикористовувати один браузерний процес.
-    juce::File getWebViewDataFolder()
-    {
-        auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-                       .getChildFile ("Dr.Doc SoundLab")
-                       .getChildFile ("ClipOnizer")
-                       .getChildFile ("WebView2");
-
-        if (! dir.isDirectory() && ! dir.createDirectory())
-            return juce::File::getSpecialLocation (juce::File::tempDirectory)
-                       .getChildFile ("ClipOnizer_WebView2");
-
-        return dir;
-    }
-
     juce::WebBrowserComponent::Options makeWebViewOptions (ClipOnizerAudioProcessorEditor& editor)
     {
         using Options = juce::WebBrowserComponent::Options;
@@ -51,7 +34,7 @@ namespace
                                         return editor.getResource (url);
                                     })
             .withWinWebView2Options (juce::WebBrowserComponent::Options::WinWebView2{}
-                .withUserDataFolder (getWebViewDataFolder())
+                .withUserDataFolder (cliponizer::getWebViewDataFolder())
                 .withBackgroundColour (webViewBootColour)
                 .withStatusBarDisabled()
                 .withBuiltInErrorPageDisabled())
@@ -61,6 +44,9 @@ namespace
             .withNativeFunction ("uiReady",
                 [&editor] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion completion)
                 { completion (editor.jsUiReady (args)); })
+            .withNativeFunction ("uiShown",
+                [&editor] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion completion)
+                { completion (editor.jsUiShown (args)); })
             .withNativeFunction ("setParam",
                 [&editor] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion completion)
                 { completion (editor.jsSetParameter (args)); })
@@ -89,7 +75,20 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (ClipOnizerAudioP
     backgroundImage = juce::ImageCache::getFromMemory (BinaryData::background_png,
                                                        BinaryData::background_pngSize);
 
-    addAndMakeVisible (webView);
+    // WebView спершу прихований: поки WebView2 стартує і вантажить сторінку,
+    // видно нативний фон з paint(). Інакше JUCE малює на місці ще не
+    // створеного WebView2 білий прямокутник (WebBrowserComponent::paint ->
+    // fallbackPaint). Контролер WebView2 створюється і для прихованого
+    // компонента, щойно в редактора з'являється вікно (peer).
+    // Показуємо його, коли JS скаже "uiShown" (картинки готові).
+    addChildComponent (webView);
+
+    // Страховка: якщо JS з якоїсь причини не відповів — показати все одно.
+    juce::Timer::callAfterDelay (3000, [safeThis = juce::Component::SafePointer<ClipOnizerAudioProcessorEditor> (this)]
+    {
+        if (safeThis != nullptr)
+            safeThis->showWebView();
+    });
 
     lastCapturedCounter = audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
 
@@ -110,14 +109,33 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (ClipOnizerAudioP
 
 ClipOnizerAudioProcessorEditor::~ClipOnizerAudioProcessorEditor() = default;
 
-// Видно лише до моменту, поки WebView2 створить своє вікно: замість білого
-// прямокутника користувач одразу бачить фон плагіна.
+// Видно лише до моменту, поки WebView прихований (сторінка ще вантажиться).
+// Повторює фон #app зі style.css (background.png + затемнювальний градієнт
+// + рамка), щоб підміна на WebView була непомітною.
 void ClipOnizerAudioProcessorEditor::paint (juce::Graphics& g)
 {
+    const auto bounds = getLocalBounds().toFloat();
+
     g.fillAll (webViewBootColour);
 
     if (backgroundImage.isValid())
-        g.drawImage (backgroundImage, getLocalBounds().toFloat(), juce::RectanglePlacement::fillDestination);
+        g.drawImage (backgroundImage, bounds, juce::RectanglePlacement::fillDestination);
+
+    // linear-gradient(180deg, rgb(61 59 55 / 21%), rgb(43 42 40 / 50%))
+    g.setGradientFill (juce::ColourGradient (juce::Colour (61, 59, 55).withAlpha (0.21f), 0.0f, 0.0f,
+                                             juce::Colour (43, 42, 40).withAlpha (0.50f), 0.0f, bounds.getBottom(),
+                                             false));
+    g.fillRect (bounds);
+
+    // border: 2px solid var(--metalEdge)
+    g.setColour (juce::Colour (0xff5a564e));
+    g.drawRect (getLocalBounds(), 2);
+}
+
+void ClipOnizerAudioProcessorEditor::showWebView()
+{
+    if (! webView.isVisible())
+        webView.setVisible (true);
 }
 
 void ClipOnizerAudioProcessorEditor::resized()
@@ -277,6 +295,13 @@ juce::var ClipOnizerAudioProcessorEditor::jsGetInitialState (const juce::Array<j
     lastPushedMeta.clear();
 
     return juce::var (obj);
+}
+
+juce::var ClipOnizerAudioProcessorEditor::jsUiShown (const juce::Array<juce::var>&)
+{
+    // Сторінка намальована і картинки декодовані — показуємо WebView.
+    showWebView();
+    return true;
 }
 
 juce::var ClipOnizerAudioProcessorEditor::jsUiReady (const juce::Array<juce::var>&)

@@ -42,6 +42,10 @@ public:
     juce::var jsSetTimeDivision (const juce::Array<juce::var>& args);
     juce::var jsGetInitialState (const juce::Array<juce::var>& args);
     juce::var jsUiReady         (const juce::Array<juce::var>& args);
+    juce::var jsUiShown         (const juce::Array<juce::var>& args);
+
+    // Показує WebView (до цього під ним видно нативний фон з paint()).
+    void showWebView();
 
     // Скільки "колонок" (min/max пар) хвилі в одному такті осцилоскопа.
     // JS сам розтягує їх на реальну ширину canvas.
