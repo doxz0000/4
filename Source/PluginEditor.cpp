@@ -227,6 +227,10 @@ juce::var ClipOnizerAudioProcessorEditor::jsGetInitialState (const juce::Array<j
     obj->setProperty ("delta", audioProcessor.apvts.getRawParameterValue (ClipOnizerAudioProcessor::idDelta)->load() > 0.5f);
     obj->setProperty ("barsOnScreen", barsOnScreen);
 
+    // Сторінка щойно (пере)завантажилась — наступний пуш має бути повним.
+    previousDirty = true;
+    lastPushedMeta.clear();
+
     return juce::var (obj);
 }
 
@@ -239,6 +243,7 @@ void ClipOnizerAudioProcessorEditor::setTimeDivision (float bars) noexcept
 
     previousBlockSamples = blockSamples;
     previousBlockId = currentBlockId;
+    previousDirty = true;
 
     blockSamples.clear();
     currentBlockId = std::numeric_limits<int64_t>::min();
@@ -286,6 +291,7 @@ void ClipOnizerAudioProcessorEditor::captureNewSamples()
         {
             previousBlockSamples = blockSamples;
             previousBlockId = currentBlockId;
+            previousDirty = true;
         }
 
         currentBlockId = blockId;
@@ -331,6 +337,7 @@ void ClipOnizerAudioProcessorEditor::captureNewSamples()
         {
             previousBlockSamples = blockSamples;
             previousBlockId = blockIdBeforeCopy;
+            previousDirty = true;
         }
 
         blockSamples.clear();
@@ -351,16 +358,22 @@ void ClipOnizerAudioProcessorEditor::captureNewSamples()
 }
 
 //==============================================================================
-// WAVEFORM DOWNSAMPLING -> compact JSON array of [min, max] pairs
+// WAVEFORM DOWNSAMPLING -> compact flat JSON array of ints:
+//   [min0,max0,min1,max1,...], значення x1000 (JS ділить на 1000).
+// Порожній хвіст (ще не записані бакети) не відправляється.
 //==============================================================================
-juce::String ClipOnizerAudioProcessorEditor::buildWaveformJson (const std::vector<ScopeSample>& samples,
-                                                                  int buckets,
-                                                                  double referenceTotalSamples) const
+void ClipOnizerAudioProcessorEditor::appendWaveformJson (juce::String& json,
+                                                         const std::vector<ScopeSample>& samples,
+                                                         int buckets,
+                                                         double referenceTotalSamples) const
 {
-    juce::String json = "[";
+    json << "[";
 
     if (samples.empty() || buckets <= 0)
-        return json + "]";
+    {
+        json << "]";
+        return;
+    }
 
     const double totalForMapping = juce::jmax (1.0, referenceTotalSamples);
     const size_t availableSamples = samples.size();
@@ -369,14 +382,11 @@ juce::String ClipOnizerAudioProcessorEditor::buildWaveformJson (const std::vecto
     {
         const size_t sampleA = static_cast<size_t> ((static_cast<double> (b) / static_cast<double> (buckets)) * totalForMapping);
 
+        if (sampleA >= availableSamples)
+            break;
+
         if (b > 0)
             json << ",";
-
-        if (sampleA >= availableSamples)
-        {
-            json << "[0,0]";
-            continue;
-        }
 
         size_t sampleB = static_cast<size_t> ((static_cast<double> (b + 1) / static_cast<double> (buckets)) * totalForMapping);
         sampleB = juce::jmax (sampleB, sampleA + static_cast<size_t> (1));
@@ -392,11 +402,10 @@ juce::String ClipOnizerAudioProcessorEditor::buildWaveformJson (const std::vecto
             maxV = juce::jmax (maxV, v);
         }
 
-        json << "[" << juce::String (minV, 4) << "," << juce::String (maxV, 4) << "]";
+        json << juce::roundToInt (minV * 1000.0f) << "," << juce::roundToInt (maxV * 1000.0f);
     }
 
     json << "]";
-    return json;
 }
 
 //==============================================================================
@@ -418,9 +427,10 @@ void ClipOnizerAudioProcessorEditor::pushStateToBrowser()
     const float progress = juce::jlimit (0.0f, 1.0f,
         (float) (static_cast<double> (blockSamples.size()) / expectedBlockSamples));
 
-    juce::String json;
-    json << "{"
-         << "\"params\":{"
+    // ---- "meta" частина: параметри, LED, піки, темп ----
+    juce::String meta;
+    meta.preallocateBytes (512);
+    meta << "\"params\":{"
          <<     "\"input\":"     << juce::String (valFor (ClipOnizerAudioProcessor::idInput), 3)     << ","
          <<     "\"output\":"    << juce::String (valFor (ClipOnizerAudioProcessor::idOutput), 3)    << ","
          <<     "\"threshold\":" << juce::String (valFor (ClipOnizerAudioProcessor::idThreshold), 3) << ","
@@ -433,15 +443,39 @@ void ClipOnizerAudioProcessorEditor::pushStateToBrowser()
          << "\"livePeakNeg\":"  << juce::String (audioProcessor.scopeLivePeakNeg.load (std::memory_order_acquire), 4)   << ","
          << "\"bpm\":"          << juce::String (bpm, 2) << ","
          << "\"qnPerBar\":"     << juce::String (qnPerBar, 3) << ","
-         << "\"barsOnScreen\":" << juce::String (barsOnScreen, 3) << ","
-         << "\"waveform\":{"
-         <<     "\"progress\":" << juce::String (progress, 4) << ","
-         <<     "\"current\":"  << buildWaveformJson (blockSamples, waveformBuckets, expectedBlockSamples)  << ","
-         <<     "\"previous\":" << buildWaveformJson (previousBlockSamples, waveformBuckets, expectedBlockSamples)
-         << "}"
-         << "}";
+         << "\"barsOnScreen\":" << juce::String (barsOnScreen, 3);
 
-    webView.evaluateJavascript ("if (window.__pluginUpdate) window.__pluginUpdate(" + json + ");");
+    // ---- Пропуск порожніх тіків: нових семплів немає і нічого не змінилось ----
+    const int64_t writeCounter = audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
+
+    if (writeCounter == lastPushedWriteCounter && ! previousDirty && meta == lastPushedMeta)
+        return;
+
+    lastPushedWriteCounter = writeCounter;
+    lastPushedMeta = meta;
+
+    // ---- Повний пакет ----
+    juce::String json;
+    json.preallocateBytes (static_cast<size_t> (meta.length()) + (previousDirty ? 12000u : 6000u) + 128u);
+
+    json << "if(window.__pluginUpdate)window.__pluginUpdate({" << meta << ","
+         << "\"waveform\":{"
+         <<     "\"n\":"        << waveformBuckets << ","
+         <<     "\"progress\":" << juce::String (progress, 4) << ","
+         <<     "\"current\":";
+    appendWaveformJson (json, blockSamples, waveformBuckets, expectedBlockSamples);
+
+    if (previousDirty)
+    {
+        ++previousSerial;
+        json << ",\"prevId\":" << previousSerial << ",\"previous\":";
+        appendWaveformJson (json, previousBlockSamples, waveformBuckets, expectedBlockSamples);
+        previousDirty = false;
+    }
+
+    json << "}});";
+
+    webView.evaluateJavascript (json);
 }
 
 //==============================================================================

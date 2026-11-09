@@ -15,13 +15,22 @@ import { getNativeFunction } from "./juce_interop.js";
 // ---------------------------------------------------------------------
 function callNative (name, ...args) {
   try {
-    // JUCE 9 API: функція getNativeFunction() з juce_interop.js
+    // JUCE 9 API: функція getNativeFunction() з juce_interop.js.
+    // Повертаємо справжній Promise з результатом від C++.
     if (typeof getNativeFunction === "function") {
-      getNativeFunction(name)(...args);
-      return Promise.resolve(null);
+      return getNativeFunction(name)(...args);
     }
   } catch (e) { /* ignore - running outside JUCE (e.g. plain browser preview) */ }
   return Promise.resolve(null);
+}
+
+// Те саме, але з таймаутом: поза JUCE (перегляд у браузері) Promise
+// від getNativeFunction ніколи не завершиться — тоді повертаємо null.
+function callNativeWithTimeout (ms, name, ...args) {
+  return Promise.race([
+    callNative(name, ...args),
+    new Promise((resolve) => setTimeout(() => resolve(null), ms)),
+  ]).catch(() => null);
 }
 
 // ---------------------------------------------------------------------
@@ -227,283 +236,37 @@ function setupZoomSlider () {
   slider.addEventListener("input", () => {
     verticalZoom = parseFloat(slider.value);
     label.textContent = verticalZoom.toFixed(2) + "x";
-    render();
+    requestRender();
   });
 }
 
 // ---------------------------------------------------------------------
-// CANVAS SETUP (handles devicePixelRatio + resizing)
+// COLORS — читаються з CSS один раз в init(), а не кожен кадр
 // ---------------------------------------------------------------------
-function setupCanvas (canvas) {
-  const ctx = canvas.getContext("2d");
+const COLORS = {
+  grid:   "#2e3a2e",
+  normal: "#8fe3a0",
+  soft:   "#ffb347",
+  hard:   "#ff4d4d",
+  thresh: "#e0d9c0",
+};
+const LABEL_COLOR = "rgba(232,195,122,0.55)";
+const DB_MARKS = [-24, -12, -6, 0, 6];
 
-  const resize = () => {
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.round(rect.width * dpr));
-    canvas.height = Math.max(1, Math.round(rect.height * dpr));
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  };
-
-  new ResizeObserver(resize).observe(canvas);
-  resize();
-
-  return ctx;
-}
-
-let shaperCtx, scopeCtx;
-
-// ---------------------------------------------------------------------
-// RENDER: CLIP SHAPER PANEL
-// ---------------------------------------------------------------------
-function renderShaper (state) {
-  const canvas = document.getElementById("shaperCanvas");
-  const ctx = shaperCtx;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  ctx.clearRect(0, 0, w, h);
-
+function readColors () {
   const style = getComputedStyle(document.documentElement);
-  const cGrid   = style.getPropertyValue("--scopeGrid").trim();
-  const cNormal = style.getPropertyValue("--traceNormal").trim();
-  const cSoft   = style.getPropertyValue("--traceSoftClip").trim();
-  const cHard   = style.getPropertyValue("--traceHardClip").trim();
-  const cThresh = style.getPropertyValue("--thresholdLine").trim();
-  const cAmber  = style.getPropertyValue("--textAmber").trim();
-
-  const thresholdDb = state.params.threshold;
-  const thresholdLin = dbToGain(thresholdDb);
-  const knee01 = Math.min(1, Math.max(0, state.params.softness / 100));
-  const sat01 = Math.min(1, Math.max(0, (state.params.saturator || 0) / 100));
-
-  const baseRange = 2.0;
-  const effectiveRange = Math.max(0.05, baseRange / Math.max(0.1, verticalZoom));
-  const maxAmp = effectiveRange * 2.0;
-
-  const cx = w / 2, cy = h / 2;
-  const ampToY = (amp) => {
-    const norm = Math.min(1, Math.max(-1, amp / effectiveRange));
-    return cy - norm * (h / 2);
-  };
-  const ampToX = (amp) => {
-    const norm = Math.min(1, Math.max(-1, amp / effectiveRange));
-    return cx + norm * (w / 2);
-  };
-
-  // grid
-  ctx.strokeStyle = cGrid;
-  ctx.lineWidth = 1;
-  ctx.font = "10px Consolas, monospace";
-  [-24, -12, -6, 0, 6].forEach((db) => {
-    const gain = dbToGain(db);
-    [gain, -gain].forEach((g) => {
-      const x = ampToX(g), y = ampToY(g);
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-    });
-  });
-
-  ctx.fillStyle = "rgba(232,195,122,0.55)";
-  [-24, -12, -6, 0, 6].forEach((db) => {
-    const y = ampToY(dbToGain(db));
-    if (y >= 0 && y <= h) {
-      const text = (db > 0 ? "+" : "") + db.toFixed(0) + " dB";
-      ctx.textAlign = "right";
-      ctx.fillText(text, w - 4, y - 2);
-    }
-  });
-
-  // unity diagonal
-  ctx.strokeStyle = "rgba(143,227,160,0.3)";
-  ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(w, 0); ctx.stroke();
-
-  // transfer curve
-  const steps = 300;
-  for (let i = 0; i < steps; i++) {
-    const xA = -maxAmp + (i / steps) * (2 * maxAmp);
-    const xB = -maxAmp + ((i + 1) / steps) * (2 * maxAmp);
-    const [outA, clipA] = chainProcess(xA, thresholdLin, knee01, sat01);
-    const [outB] = chainProcess(xB, thresholdLin, knee01, sat01);
-
-    ctx.strokeStyle = clipA < 0.001 ? cNormal : (clipA < 0.85 ? cSoft : cHard);
-    ctx.lineWidth = 2.2;
-    ctx.beginPath();
-    ctx.moveTo(ampToX(xA), ampToY(outA));
-    ctx.lineTo(ampToX(xB), ampToY(outB));
-    ctx.stroke();
-  }
-
-  // threshold dashed lines
-  ctx.strokeStyle = cThresh;
-  ctx.setLineDash([5, 4]);
-  ctx.lineWidth = 1.2;
-  [thresholdLin, -thresholdLin].forEach((v) => {
-    const y = ampToY(v);
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-  });
-  ctx.setLineDash([]);
-
-  ctx.fillStyle = cThresh;
-  ctx.font = "bold 12px Consolas, monospace";
-  ctx.textAlign = "left";
-  const label = (thresholdDb > 0 ? "THRESHOLD +" : "THRESHOLD ") + thresholdDb.toFixed(1) + " dB";
-  ctx.fillText(label, 2, ampToY(thresholdLin) - 4);
-
-  // live dots
-  liveDotPosSmoothed += (state.livePeakPos - liveDotPosSmoothed) * 0.6;
-  liveDotNegSmoothed += (state.livePeakNeg - liveDotNegSmoothed) * 0.6;
-
-  const drawDot = (amp) => {
-    const [outAmp, clipAmt] = chainProcess(amp, thresholdLin, knee01, sat01);
-    const x = ampToX(amp), y = ampToY(outAmp);
-    const col = clipAmt < 0.001 ? cNormal : (clipAmt < 0.85 ? cSoft : cHard);
-    ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "rgba(255,255,255,0.6)";
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.stroke();
-  };
-  drawDot(liveDotPosSmoothed);
-  drawDot(liveDotNegSmoothed);
+  const get = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
+  COLORS.grid   = get("--scopeGrid",     COLORS.grid);
+  COLORS.normal = get("--traceNormal",   COLORS.normal);
+  COLORS.soft   = get("--traceSoftClip", COLORS.soft);
+  COLORS.hard   = get("--traceHardClip", COLORS.hard);
+  COLORS.thresh = get("--thresholdLine", COLORS.thresh);
 }
 
-// ---------------------------------------------------------------------
-// RENDER: OSCILLOSCOPE PANEL
-// ---------------------------------------------------------------------
-function renderScope (state) {
-  const canvas = document.getElementById("scopeCanvas");
-  const ctx = scopeCtx;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  ctx.clearRect(0, 0, w, h);
-
-  const style = getComputedStyle(document.documentElement);
-  const cGrid   = style.getPropertyValue("--scopeGrid").trim();
-  const cNormal = style.getPropertyValue("--traceNormal").trim();
-  const cSoft   = style.getPropertyValue("--traceSoftClip").trim();
-  const cHard   = style.getPropertyValue("--traceHardClip").trim();
-  const cThresh = style.getPropertyValue("--thresholdLine").trim();
-
-  const bpm = state.bpm;
-  const qnPerBar = state.qnPerBar;
-  const thresholdDb = state.params.threshold;
-  const thresholdLin = dbToGain(thresholdDb);
-  const knee01 = Math.min(1, Math.max(0, state.params.softness / 100));
-  const kneeWidth = knee01 > 0.001 ? Math.max(0.0005, knee01) : 0.0;
-  const kneeStart = kneeWidth > 0 ? Math.max(0, thresholdLin - kneeWidth) : thresholdLin;
-
-  const baseRange = 2.0;
-  const effectiveRange = Math.max(0.05, baseRange / Math.max(0.1, verticalZoom));
-  const cy = h / 2;
-  const ampToY = (amp) => {
-    const norm = Math.min(1, Math.max(-1, amp / effectiveRange));
-    return cy - norm * (h / 2);
-  };
-
-  // dB grid + labels
-  ctx.font = "10px Consolas, monospace";
-  [-24, -12, -6, 0, 6].forEach((db) => {
-    const y = ampToY(dbToGain(db));
-    if (y >= 0 && y <= h) {
-      ctx.strokeStyle = cGrid;
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-      ctx.fillStyle = "rgba(232,195,122,0.55)";
-      ctx.textAlign = "right";
-      ctx.fillText((db > 0 ? "+" : "") + db.toFixed(0) + " dB", w - 4, y - 2);
-    }
-  });
-
-  // musical grid
-  const totalQuarterNotes = qnPerBar * barsOnScreen;
-  const quarterLineCount = Math.max(1, Math.ceil(totalQuarterNotes));
-  for (let q = 0; q <= quarterLineCount; q++) {
-    const x = (q / quarterLineCount) * w;
-    const isBarLine = (q % qnPerBar) < 0.001;
-    ctx.strokeStyle = isBarLine ? "rgba(232,195,122,0.28)" : cGrid;
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-  }
-
-  // waveform
-  const drawWaveform = (buckets, endFraction, faded) => {
-    if (!buckets || buckets.length === 0) return;
-
-    const n = buckets.length;
-    const endPx = Math.round(Math.min(1, Math.max(0, endFraction)) * w);
-    if (endPx <= 0) return;
-
-    const colorByY = (y) => {
-      const thresholdY = ampToY(thresholdLin);
-      const negThresholdY = ampToY(-thresholdLin);
-      const kneePosY = ampToY(kneeStart);
-      const kneeNegY = ampToY(-kneeStart);
-      if (y <= thresholdY || y >= negThresholdY) return cHard;
-      if (y <= kneePosY || y >= kneeNegY) return cSoft;
-      return cNormal;
-    };
-
-    const alpha = faded ? 0.22 : 0.55;
-
-    for (let px = 0; px < endPx; px++) {
-      const bucketIndex = Math.min(n - 1, Math.floor((px / w) * n));
-      const [minV, maxV] = buckets[bucketIndex];
-      const yTop = ampToY(maxV);
-      const yBot = ampToY(minV);
-      if (yTop >= yBot) continue;
-
-      const col = colorByY((yTop + yBot) / 2);
-      ctx.fillStyle = hexWithAlpha(col, alpha);
-      ctx.fillRect(px, yTop, 1.4, yBot - yTop);
-    }
-
-    // outline (top edge)
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = faded ? 0.3 : 1.0;
-    for (let px = 1; px < endPx; px++) {
-      const bA = Math.min(n - 1, Math.floor(((px - 1) / w) * n));
-      const bB = Math.min(n - 1, Math.floor((px / w) * n));
-      const yA = ampToY(buckets[bA][1]);
-      const yB = ampToY(buckets[bB][1]);
-      ctx.strokeStyle = colorByY((yA + yB) / 2);
-      ctx.beginPath(); ctx.moveTo(px - 1, yA); ctx.lineTo(px, yB); ctx.stroke();
-    }
-    ctx.globalAlpha = 1.0;
-  };
-
-  drawWaveform(state.waveform.previous, 1.0, true);
-  drawWaveform(state.waveform.current, state.waveform.progress, false);
-
-  // threshold lines
-  ctx.strokeStyle = cThresh;
-  ctx.setLineDash([5, 4]);
-  ctx.lineWidth = 1.5;
-  [thresholdLin, -thresholdLin].forEach((v) => {
-    const y = ampToY(v);
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-  });
-  ctx.setLineDash([]);
-
-  if (kneeWidth > 0 && kneeStart < thresholdLin) {
-    ctx.strokeStyle = hexWithAlpha(cSoft, 0.45);
-    ctx.setLineDash([3, 5]);
-    ctx.lineWidth = 1.0;
-    [kneeStart, -kneeStart].forEach((v) => {
-      const y = ampToY(v);
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-    });
-    ctx.setLineDash([]);
-  }
-
-  ctx.fillStyle = cThresh;
-  ctx.font = "bold 12px Consolas, monospace";
-  ctx.textAlign = "left";
-  const label = (thresholdDb > 0 ? "THRESHOLD +" : "THRESHOLD ") + thresholdDb.toFixed(1) + " dB";
-  ctx.fillText(label, 2, ampToY(thresholdLin) - 4);
-}
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const crisp = (v) => Math.round(v) + 0.5;   // 1px лінії без розмиття
 
 function hexWithAlpha (colorStr, alpha) {
-  // colorStr can be "#rrggbb" — convert to rgba()
   if (colorStr.startsWith("#") && colorStr.length === 7) {
     const r = parseInt(colorStr.substr(1, 2), 16);
     const g = parseInt(colorStr.substr(3, 2), 16);
@@ -513,14 +276,418 @@ function hexWithAlpha (colorStr, alpha) {
   return colorStr;
 }
 
+function hexToRgba (hex, alpha) { return hexWithAlpha(hex, alpha); }
+
+function verticalRange () {
+  return Math.max(0.05, 2.0 / Math.max(0.1, verticalZoom));
+}
+
 // ---------------------------------------------------------------------
-// RENDER: CLIP LED + BPM + PROGRESS TEXT
+// CANVAS SETUP (devicePixelRatio + resizing). Розмір кешується у view,
+// щоб не читати clientWidth (layout) кожен кадр.
 // ---------------------------------------------------------------------
+function setupCanvas (canvas) {
+  const view = { canvas, ctx: canvas.getContext("2d"), w: 1, h: 1, dpr: 1, sizeKey: "" };
+
+  const resize = () => {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    view.w = Math.max(1, rect.width);
+    view.h = Math.max(1, rect.height);
+    view.dpr = dpr;
+    canvas.width = Math.max(1, Math.round(view.w * dpr));
+    canvas.height = Math.max(1, Math.round(view.h * dpr));
+    view.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    view.sizeKey = `${canvas.width}x${canvas.height}`;
+    requestRender();
+  };
+
+  new ResizeObserver(resize).observe(canvas);
+  resize();
+  return view;
+}
+
+// Offscreen-шар того ж розміру, що й view. Повторно використовує
+// існуючий canvas, якщо розмір не змінився (без зайвих алокацій).
+function ensureLayer (layer, view) {
+  if (!layer || layer.canvas.width !== view.canvas.width || layer.canvas.height !== view.canvas.height) {
+    const c = document.createElement("canvas");
+    c.width = view.canvas.width;
+    c.height = view.canvas.height;
+    layer = { canvas: c, ctx: c.getContext("2d") };
+  } else {
+    layer.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    layer.ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+  }
+  layer.ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  return layer;
+}
+
+function blit (view, layer) {
+  view.ctx.drawImage(layer.canvas, 0, 0, view.w, view.h);
+}
+
+function drawDbLabels (ctx, w, h, ampToY) {
+  ctx.fillStyle = LABEL_COLOR;
+  ctx.font = "10px Consolas, monospace";
+  ctx.textAlign = "right";
+  DB_MARKS.forEach((db) => {
+    const y = ampToY(dbToGain(db));
+    if (y >= 0 && y <= h) ctx.fillText((db > 0 ? "+" : "") + db.toFixed(0) + " dB", w - 4, y - 2);
+  });
+}
+
+function drawThresholdLines (ctx, w, ampToY, thresholdDb, thresholdLin, lineWidth) {
+  ctx.strokeStyle = COLORS.thresh;
+  ctx.setLineDash([5, 4]);
+  ctx.lineWidth = lineWidth;
+  ctx.beginPath();
+  [thresholdLin, -thresholdLin].forEach((v) => {
+    const y = crisp(ampToY(v));
+    ctx.moveTo(0, y); ctx.lineTo(w, y);
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = COLORS.thresh;
+  ctx.font = "bold 12px Consolas, monospace";
+  ctx.textAlign = "left";
+  const label = (thresholdDb > 0 ? "THRESHOLD +" : "THRESHOLD ") + thresholdDb.toFixed(1) + " dB";
+  ctx.fillText(label, 2, ampToY(thresholdLin) - 4);
+}
+
+let shaperView, scopeView;
+
+// ---------------------------------------------------------------------
+// RENDER: CLIP SHAPER PANEL
+//   Сітка + крива + пороги кешуються в offscreen-шар і перебудовуються
+//   лише при зміні threshold/softness/saturator/zoom/розміру.
+//   У звичайному кадрі: 1 drawImage + 2 точки.
+// ---------------------------------------------------------------------
+let shaperLayer = null;
+let shaperKey = "";
+
+function zoneColor (zone) {
+  return zone === 0 ? COLORS.normal : zone === 1 ? COLORS.soft : COLORS.hard;
+}
+
+function buildShaperLayer (view, thresholdDb, knee01, sat01) {
+  shaperLayer = ensureLayer(shaperLayer, view);
+  const ctx = shaperLayer.ctx;
+  const w = view.w, h = view.h;
+  const range = verticalRange();
+  const thresholdLin = dbToGain(thresholdDb);
+  const cx = w / 2, cy = h / 2;
+  const ampToY = (amp) => cy - Math.min(1, Math.max(-1, amp / range)) * (h / 2);
+  const ampToX = (amp) => cx + Math.min(1, Math.max(-1, amp / range)) * (w / 2);
+
+  // grid — один шлях, один stroke
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  DB_MARKS.forEach((db) => {
+    const g = dbToGain(db);
+    [g, -g].forEach((v) => {
+      const x = crisp(ampToX(v)), y = crisp(ampToY(v));
+      ctx.moveTo(x, 0); ctx.lineTo(x, h);
+      ctx.moveTo(0, y); ctx.lineTo(w, y);
+    });
+  });
+  ctx.stroke();
+  drawDbLabels(ctx, w, h, ampToY);
+
+  // unity diagonal
+  ctx.strokeStyle = hexWithAlpha(COLORS.normal, 0.22);
+  ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(w, 0); ctx.stroke();
+
+  // transfer curve — один Path2D, колір зон через горизонтальний
+  // градієнт з жорсткими стопами (замість 300 окремих відрізків)
+  const steps = Math.max(96, Math.round(w / 2));
+  const path = new Path2D();
+  const grad = ctx.createLinearGradient(0, 0, w, 0);
+  let prevZone = 0, prevX = 0;
+
+  for (let i = 0; i <= steps; i++) {
+    const xin = -range + (i / steps) * 2 * range;
+    const [out, clip] = chainProcess(xin, thresholdLin, knee01, sat01);
+    const x = ampToX(xin), y = ampToY(out);
+    const zone = clip < 0.001 ? 0 : (clip < 0.85 ? 1 : 2);
+
+    if (i === 0) {
+      path.moveTo(x, y);
+      grad.addColorStop(0, zoneColor(zone));
+    } else {
+      path.lineTo(x, y);
+      if (zone !== prevZone) {
+        const t = clamp01((prevX + x) / 2 / w);
+        grad.addColorStop(t, zoneColor(prevZone));
+        grad.addColorStop(t, zoneColor(zone));
+      }
+    }
+    prevZone = zone;
+    prevX = x;
+  }
+  grad.addColorStop(1, zoneColor(prevZone));
+
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.strokeStyle = grad;
+  // м'яке світіння: широкі напівпрозорі проходи (без дорогого shadowBlur)
+  ctx.globalAlpha = 0.14; ctx.lineWidth = 8;   ctx.stroke(path);
+  ctx.globalAlpha = 0.28; ctx.lineWidth = 4;   ctx.stroke(path);
+  ctx.globalAlpha = 1.0;  ctx.lineWidth = 2.2; ctx.stroke(path);
+
+  drawThresholdLines(ctx, w, ampToY, thresholdDb, thresholdLin, 1.2);
+}
+
+function renderShaper (state) {
+  const view = shaperView;
+  const ctx = view.ctx;
+  const w = view.w, h = view.h;
+
+  const thresholdDb = state.params.threshold;
+  const thresholdLin = dbToGain(thresholdDb);
+  const knee01 = clamp01(state.params.softness / 100);
+  const sat01 = clamp01((state.params.saturator || 0) / 100);
+
+  const key = `${thresholdDb}|${knee01}|${sat01}|${verticalZoom}|${view.sizeKey}`;
+  if (key !== shaperKey || !shaperLayer) {
+    buildShaperLayer(view, thresholdDb, knee01, sat01);
+    shaperKey = key;
+  }
+
+  ctx.clearRect(0, 0, w, h);
+  blit(view, shaperLayer);
+
+  // live dots
+  liveDotPosSmoothed += (state.livePeakPos - liveDotPosSmoothed) * 0.6;
+  liveDotNegSmoothed += (state.livePeakNeg - liveDotNegSmoothed) * 0.6;
+
+  const range = verticalRange();
+  const cx = w / 2, cy = h / 2;
+  const drawDot = (amp) => {
+    const [outAmp, clipAmt] = chainProcess(amp, thresholdLin, knee01, sat01);
+    const x = cx + Math.min(1, Math.max(-1, amp / range)) * (w / 2);
+    const y = cy - Math.min(1, Math.max(-1, outAmp / range)) * (h / 2);
+    const col = clipAmt < 0.001 ? COLORS.normal : (clipAmt < 0.85 ? COLORS.soft : COLORS.hard);
+
+    ctx.fillStyle = col;
+    ctx.globalAlpha = 0.22;
+    ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1.0;
+    ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  };
+  drawDot(liveDotPosSmoothed);
+  drawDot(liveDotNegSmoothed);
+}
+
+// ---------------------------------------------------------------------
+// RENDER: OSCILLOSCOPE PANEL
+//   under-шар: сітки + бліда попередня хвиля (перебудова раз на такт)
+//   over-шар : пунктири threshold/knee + підпис
+//   кадр     : 2 drawImage + 1 заповнена згладжена фігура поточної хвилі
+// ---------------------------------------------------------------------
+let scopeUnder = null, scopeOver = null;
+let scopeUnderKey = "", scopeGeomKey = "";
+let scopeFillGrad = null, scopeLineGrad = null;
+
+let waveXs = new Float32Array(0);
+let waveTop = new Float32Array(0);
+let waveBot = new Float32Array(0);
+
+function ensureWaveBuffers (count) {
+  if (waveXs.length < count) {
+    waveXs = new Float32Array(count);
+    waveTop = new Float32Array(count);
+    waveBot = new Float32Array(count);
+  }
+}
+
+// Згладжування по серединах сусідніх точок (quadraticCurveTo):
+// крива проходить плавно, без "сходинок", ціна — 1 команда на точку.
+function smoothTo (path, xs, ys, from, to, dir, move) {
+  let px = xs[from], py = ys[from];
+  if (move) path.moveTo(px, py); else path.lineTo(px, py);
+  for (let i = from + dir; i !== to + dir; i += dir) {
+    const x = xs[i], y = ys[i];
+    path.quadraticCurveTo(px, py, (px + x) * 0.5, (py + y) * 0.5);
+    px = x; py = y;
+  }
+  path.lineTo(px, py);
+}
+
+// Вертикальний градієнт зон: hard (за порогом) -> soft (knee) -> normal.
+function makeZoneGradient (ctx, h, geo, alpha) {
+  const f = (amp) => clamp01(geo.ampToY(amp) / h);
+  const tP = f(geo.thresholdLin), kP = f(geo.kneeStart);
+  const kN = f(-geo.kneeStart),   tN = f(-geo.thresholdLin);
+  const hard = hexWithAlpha(COLORS.hard, alpha);
+  const soft = hexWithAlpha(COLORS.soft, alpha);
+  const norm = hexWithAlpha(COLORS.normal, alpha);
+
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, hard);  g.addColorStop(tP, hard);
+  g.addColorStop(tP, soft); g.addColorStop(kP, soft);
+  g.addColorStop(kP, norm); g.addColorStop(kN, norm);
+  g.addColorStop(kN, soft); g.addColorStop(tN, soft);
+  g.addColorStop(tN, hard); g.addColorStop(1, hard);
+  return g;
+}
+
+// arr — плаский масив цілих [min,max,...] x1000 (з C++), n — повна к-сть бакетів
+function drawWave (ctx, arr, n, w, ampToY, fillStyle, strokeStyle, lineWidth) {
+  if (!arr || n <= 0) return;
+  const count = Math.min(n, arr.length >> 1);
+  if (count < 2) return;
+
+  ensureWaveBuffers(count);
+  const step = w / n;
+  for (let i = 0; i < count; i++) {
+    waveXs[i]  = (i + 0.5) * step;
+    waveBot[i] = ampToY(arr[2 * i] * 0.001);
+    waveTop[i] = ampToY(arr[2 * i + 1] * 0.001);
+  }
+
+  const body = new Path2D();
+  smoothTo(body, waveXs, waveTop, 0, count - 1, 1, true);
+  smoothTo(body, waveXs, waveBot, count - 1, 0, -1, false);
+  body.closePath();
+  ctx.fillStyle = fillStyle;
+  ctx.fill(body);
+
+  const edges = new Path2D();
+  smoothTo(edges, waveXs, waveTop, 0, count - 1, 1, true);
+  smoothTo(edges, waveXs, waveBot, 0, count - 1, 1, true);
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.lineWidth = lineWidth;
+  ctx.strokeStyle = strokeStyle;
+  ctx.stroke(edges);
+}
+
+function scopeGeometry (state, h) {
+  const thresholdDb = state.params.threshold;
+  const thresholdLin = dbToGain(thresholdDb);
+  const knee01 = clamp01(state.params.softness / 100);
+  const kneeWidth = knee01 > 0.001 ? Math.max(0.0005, knee01) : 0.0;
+  const kneeStart = kneeWidth > 0 ? Math.max(0, thresholdLin - kneeWidth) : thresholdLin;
+  const range = verticalRange();
+  const cy = h / 2;
+  const ampToY = (amp) => cy - Math.min(1, Math.max(-1, amp / range)) * cy;
+  return { thresholdDb, thresholdLin, kneeWidth, kneeStart, ampToY };
+}
+
+function buildScopeUnder (view, state, geo, n) {
+  scopeUnder = ensureLayer(scopeUnder, view);
+  const ctx = scopeUnder.ctx;
+  const w = view.w, h = view.h;
+
+  // dB grid
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  DB_MARKS.forEach((db) => {
+    const y = geo.ampToY(dbToGain(db));
+    if (y >= 0 && y <= h) { ctx.moveTo(0, crisp(y)); ctx.lineTo(w, crisp(y)); }
+  });
+  ctx.stroke();
+  drawDbLabels(ctx, w, h, geo.ampToY);
+
+  // musical grid
+  const qnPerBar = state.qnPerBar;
+  const quarterLineCount = Math.max(1, Math.ceil(qnPerBar * barsOnScreen));
+  const beats = new Path2D(), bars = new Path2D();
+  for (let q = 0; q <= quarterLineCount; q++) {
+    const x = crisp((q / quarterLineCount) * w);
+    const target = (q % qnPerBar) < 0.001 ? bars : beats;
+    target.moveTo(x, 0); target.lineTo(x, h);
+  }
+  ctx.strokeStyle = COLORS.grid;               ctx.stroke(beats);
+  ctx.strokeStyle = "rgba(232,195,122,0.28)";  ctx.stroke(bars);
+
+  // previous (faded) waveform
+  drawWave(ctx, state.waveform.previous, n, w, geo.ampToY,
+           makeZoneGradient(ctx, h, geo, 0.13),
+           makeZoneGradient(ctx, h, geo, 0.32), 1.0);
+}
+
+function buildScopeOver (view, geo) {
+  scopeOver = ensureLayer(scopeOver, view);
+  const ctx = scopeOver.ctx;
+  const w = view.w;
+
+  // knee lines
+  if (geo.kneeWidth > 0 && geo.kneeStart < geo.thresholdLin) {
+    ctx.strokeStyle = hexWithAlpha(COLORS.soft, 0.45);
+    ctx.setLineDash([3, 5]);
+    ctx.lineWidth = 1.0;
+    ctx.beginPath();
+    [geo.kneeStart, -geo.kneeStart].forEach((v) => {
+      const y = crisp(geo.ampToY(v));
+      ctx.moveTo(0, y); ctx.lineTo(w, y);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  drawThresholdLines(ctx, w, geo.ampToY, geo.thresholdDb, geo.thresholdLin, 1.5);
+}
+
+function renderScope (state) {
+  const view = scopeView;
+  const ctx = view.ctx;
+  const w = view.w, h = view.h;
+  const wf = state.waveform || {};
+  const n = wf.n || 600;
+
+  const geo = scopeGeometry(state, h);
+  const geomKey = `${geo.thresholdDb}|${state.params.softness}|${verticalZoom}|${view.sizeKey}`;
+  const underKey = `${geomKey}|${barsOnScreen}|${state.qnPerBar}|${wf.prevId}`;
+
+  if (geomKey !== scopeGeomKey || !scopeOver) {
+    buildScopeOver(view, geo);
+    scopeFillGrad = makeZoneGradient(ctx, h, geo, 0.30);
+    scopeLineGrad = makeZoneGradient(ctx, h, geo, 1.0);
+    scopeGeomKey = geomKey;
+  }
+  if (underKey !== scopeUnderKey || !scopeUnder) {
+    buildScopeUnder(view, state, geo, n);
+    scopeUnderKey = underKey;
+  }
+
+  ctx.clearRect(0, 0, w, h);
+  blit(view, scopeUnder);
+
+  drawWave(ctx, wf.current, n, w, geo.ampToY, scopeFillGrad, scopeLineGrad, 1.2);
+
+  // "голівка" запису: м'який шлейф + тонка лінія
+  const progress = clamp01(wf.progress || 0);
+  if (wf.current && wf.current.length > 0 && progress < 1) {
+    const px = progress * w;
+    const trail = ctx.createLinearGradient(px - 28, 0, px, 0);
+    trail.addColorStop(0, hexWithAlpha(COLORS.thresh, 0));
+    trail.addColorStop(1, hexWithAlpha(COLORS.thresh, 0.10));
+    ctx.fillStyle = trail;
+    ctx.fillRect(px - 28, 0, 28, h);
+    ctx.fillStyle = hexWithAlpha(COLORS.thresh, 0.45);
+    ctx.fillRect(px - 0.5, 0, 1, h);
+  }
+
+  blit(view, scopeOver);
+}
+
+// ---------------------------------------------------------------------
+// RENDER: CLIP LED + BPM + PROGRESS TEXT (DOM чіпаємо лише при змінах)
+// ---------------------------------------------------------------------
+let lastLedKey = "";
+let lastBpmText = "";
+let lastProgressText = "";
+
 function renderMeta (state) {
   clipLedSmoothed += (state.clipLevel - clipLedSmoothed) * 0.2;
-
-  const led = document.getElementById("clipLed");
-  const glow = document.getElementById("clipGlow");
 
   let color;
   if (clipLedSmoothed < 0.05) color = "#1f7a1f";
@@ -528,23 +695,30 @@ function renderMeta (state) {
   else if (clipLedSmoothed < 0.65) color = "#ff8a1a";
   else color = "#ff2e2e";
 
-  led.style.background = color;
-  led.style.boxShadow = `0 0 ${6 + clipLedSmoothed * 14}px ${color}`;
-  glow.style.background = `radial-gradient(circle, ${hexToRgba(color, 0.6 * clipLedSmoothed)} 0%, ${hexToRgba(color, 0)} 70%)`;
+  const ledLevel = Math.round(clipLedSmoothed * 40) / 40;
+  const ledKey = color + ledLevel;
+  if (ledKey !== lastLedKey) {
+    lastLedKey = ledKey;
+    const led = document.getElementById("clipLed");
+    const glow = document.getElementById("clipGlow");
+    led.style.background = color;
+    led.style.boxShadow = `0 0 ${6 + ledLevel * 14}px ${color}`;
+    glow.style.background = `radial-gradient(circle, ${hexToRgba(color, 0.6 * ledLevel)} 0%, ${hexToRgba(color, 0)} 70%)`;
+  }
 
-  document.getElementById("bpmLabel").textContent = "BPM: " + Math.round(state.bpm);
+  const bpmText = "BPM: " + Math.round(state.bpm);
+  if (bpmText !== lastBpmText) {
+    lastBpmText = bpmText;
+    document.getElementById("bpmLabel").textContent = bpmText;
+  }
 
-  const pct = state.waveform.current && state.waveform.current.length > 0
-    ? Math.round(state.waveform.progress * 100)
-    : 0;
-  document.getElementById("scopeProgress").textContent = `${barsOnScreen.toFixed(2)} BAR   ${pct}%`;
-}
-
-function hexToRgba (hex, alpha) {
-  const r = parseInt(hex.substr(1, 2), 16);
-  const g = parseInt(hex.substr(3, 2), 16);
-  const b = parseInt(hex.substr(5, 2), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
+  const wf = state.waveform || {};
+  const pct = wf.current && wf.current.length > 0 ? Math.round(wf.progress * 100) : 0;
+  const progressText = `${barsOnScreen.toFixed(2)} BAR   ${pct}%`;
+  if (progressText !== lastProgressText) {
+    lastProgressText = progressText;
+    document.getElementById("scopeProgress").textContent = progressText;
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -557,7 +731,9 @@ function renderControls (state) {
     // Під час перетягування ручки не перекреслюємо локальне значення
     // значенням, яке ще не підтвердив хост (інакше ручка смикається).
     if (activeDragParam === id) return;
+    if (d.currentValue === state.params[id] && d.shown) return;   // без зайвих DOM-змін
     d.currentValue = state.params[id];
+    d.shown = true;
     setKnobVisual(id, state.params[id]);
   });
 
@@ -568,10 +744,22 @@ function renderControls (state) {
 }
 
 // ---------------------------------------------------------------------
-// MAIN RENDER
+// MAIN RENDER — не частіше одного разу на кадр дисплея (rAF).
+// Якщо вікно плагіна сховане, rAF не викликається -> навантаження ~0.
 // ---------------------------------------------------------------------
+let renderPending = false;
+
+function requestRender () {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(() => {
+    renderPending = false;
+    render();
+  });
+}
+
 function render () {
-  if (!latestState) return;
+  if (!latestState || !shaperView || !scopeView) return;
   renderControls(latestState);
   renderShaper(latestState);
   renderScope(latestState);
@@ -579,20 +767,28 @@ function render () {
 }
 
 // ---------------------------------------------------------------------
-// ENTRY POINT — called by C++ every ~33ms via evaluateJavascript()
+// ENTRY POINT — called by C++ (~30 Гц, порожні тіки пропускаються).
+// "previous" приходить лише коли змінився (новий prevId) — інакше
+// беремо збережений з минулого пакета.
 // ---------------------------------------------------------------------
 window.__pluginUpdate = function (state) {
+  const wf = state.waveform;
+  if (wf && wf.previous === undefined && latestState && latestState.waveform) {
+    wf.previous = latestState.waveform.previous;
+    wf.prevId = latestState.waveform.prevId;
+  }
   latestState = state;
   barsOnScreen = state.barsOnScreen;
-  render();
+  requestRender();
 };
 
 // ---------------------------------------------------------------------
 // INIT
 // ---------------------------------------------------------------------
 async function init () {
-  shaperCtx = setupCanvas(document.getElementById("shaperCanvas"));
-  scopeCtx = setupCanvas(document.getElementById("scopeCanvas"));
+  readColors();
+  shaperView = setupCanvas(document.getElementById("shaperCanvas"));
+  scopeView = setupCanvas(document.getElementById("scopeCanvas"));
 
   setupTimeButtons();
   setupZoomSlider();
@@ -604,7 +800,7 @@ async function init () {
     setupKnobDragging(knobEl, id);
   });
 
-  const initial = await callNative("getInitialState");
+  const initial = await callNativeWithTimeout(1500, "getInitialState");
 
   if (initial && initial.params) {
     initial.params.forEach((p) => {
@@ -616,6 +812,8 @@ async function init () {
     document.getElementById("deltaImg").src = deltaState ? "Resources/DeltaOn.png" : "Resources/DeltaOff.png";
 
     barsOnScreen = initial.barsOnScreen || 1.0;
+    document.querySelectorAll(".barBtn").forEach((b) =>
+      b.classList.toggle("active", Math.abs(parseFloat(b.dataset.bars) - barsOnScreen) < 1e-3));
   } else {
     // Фолбек (напр. якщо відкрито просто у браузері для перегляду дизайну)
     paramDescriptors.input     = { min: -24, max: 24, step: 0.01, label: "dB", currentValue: 0 };
@@ -626,7 +824,7 @@ async function init () {
     Object.keys(paramDescriptors).forEach((id) => setKnobVisual(id, paramDescriptors[id].currentValue));
   }
 
-  render();
+  requestRender();
 }
 
 document.addEventListener("DOMContentLoaded", init);

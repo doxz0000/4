@@ -47,9 +47,12 @@ private:
     void captureNewSamples();
     void pushStateToBrowser();
 
-    juce::String buildWaveformJson (const std::vector<ScopeSample>& samples,
-                                     int buckets,
-                                     double referenceTotalSamples) const;
+    // Плоский масив цілих [min,max,min,max,...] (значення x1000).
+    // Відправляються лише заповнені бакети — порожній хвіст не передається.
+    void appendWaveformJson (juce::String& json,
+                             const std::vector<ScopeSample>& samples,
+                             int buckets,
+                             double referenceTotalSamples) const;
 
     ClipOnizerAudioProcessor& audioProcessor;
 
@@ -66,6 +69,13 @@ private:
     int64_t currentBlockId  = std::numeric_limits<int64_t>::min();
     int64_t previousBlockId = std::numeric_limits<int64_t>::min();
     float barsOnScreen = 1.0f;
+
+    // -------------------------------------------------------------------
+    // Економія трафіку C++ -> JS
+    bool previousDirty = true;          // previousBlockSamples змінився -> відправити
+    int  previousSerial = 0;            // лічильник версій previous для JS
+    int64_t lastPushedWriteCounter = -1;
+    juce::String lastPushedMeta;        // параметри/піки минулого пушу
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipOnizerAudioProcessorEditor)
 };
