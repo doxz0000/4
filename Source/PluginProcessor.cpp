@@ -457,8 +457,8 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // короткий транзієнт), далі швидкий експоненційний спад.
     // Усе в секундах — не залежить від розміру буфера.
     {
-        constexpr double holdSeconds    = 0.05;
-        constexpr double releaseSeconds = 0.15;
+        constexpr double holdSeconds    = 0.15;
+        constexpr double releaseSeconds = 0.25;
 
         const float blockReductionDb =
             juce::Decibels::gainToDecibels (blockMaxReduction, -100.0f);

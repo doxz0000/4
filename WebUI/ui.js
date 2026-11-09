@@ -337,7 +337,7 @@ function drawDbLabels (ctx, w, h, ampToY) {
   });
 }
 
-function drawThresholdLines (ctx, w, ampToY, thresholdDb, thresholdLin, lineWidth) {
+function drawThresholdLines (ctx, w, ampToY, thresholdDb, thresholdLin, lineWidth, labelOverride) {
   ctx.strokeStyle = COLORS.thresh;
   ctx.setLineDash([5, 4]);
   ctx.lineWidth = lineWidth;
@@ -352,7 +352,8 @@ function drawThresholdLines (ctx, w, ampToY, thresholdDb, thresholdLin, lineWidt
   ctx.fillStyle = COLORS.thresh;
   ctx.font = "bold 12px Consolas, monospace";
   ctx.textAlign = "left";
-  const label = (thresholdDb > 0 ? "THRESHOLD +" : "THRESHOLD ") + thresholdDb.toFixed(1) + " dB";
+  const label = labelOverride
+    || (thresholdDb > 0 ? "THRESHOLD +" : "THRESHOLD ") + thresholdDb.toFixed(1) + " dB";
   ctx.fillText(label, 2, ampToY(thresholdLin) - 4);
 }
 
@@ -371,7 +372,7 @@ function zoneColor (zone) {
   return zone === 0 ? COLORS.normal : zone === 1 ? COLORS.soft : COLORS.hard;
 }
 
-function buildShaperLayer (view, thresholdDb, knee01, sat01) {
+function buildShaperLayer (view, thresholdDb, knee01, sat01, outGain) {
   shaperLayer = ensureLayer(shaperLayer, view);
   const ctx = shaperLayer.ctx;
   const w = view.w, h = view.h;
@@ -411,7 +412,7 @@ function buildShaperLayer (view, thresholdDb, knee01, sat01) {
   for (let i = 0; i <= steps; i++) {
     const xin = -range + (i / steps) * 2 * range;
     const [out, clip] = chainProcess(xin, thresholdLin, knee01, sat01);
-    const x = ampToX(xin), y = ampToY(out);
+    const x = ampToX(xin), y = ampToY(out * outGain);
     const zone = clip < 0.001 ? 0 : (clip < 0.85 ? 1 : 2);
 
     if (i === 0) {
@@ -455,27 +456,39 @@ function renderShaper (state) {
   const knee01 = clamp01(state.params.softness / 100);
   const sat01 = clamp01((state.params.saturator || 0) / 100);
 
-  const key = `${thresholdDb}|${knee01}|${sat01}|${verticalZoom}|${view.sizeKey}`;
+  // OUTPUT gain застосовується після кліпера (у Delta-режимі — ні),
+  // тож уся панель "ПІСЛЯ" масштабується на нього.
+  const outDb = state.params.delta ? 0 : (Number(state.params.output) || 0);
+  const outGain = dbToGain(outDb);
+
+  const key = `${thresholdDb}|${knee01}|${sat01}|${outGain}|${verticalZoom}|${view.sizeKey}`;
   if (key !== shaperKey || !shaperLayer) {
-    buildShaperLayer(view, thresholdDb, knee01, sat01);
+    buildShaperLayer(view, thresholdDb, knee01, sat01, outGain);
     shaperKey = key;
   }
 
   // --- вихідна хвиля в часі ---
   const wf = state.waveform || {};
   const n = wf.n || 600;
-  const geo = scopeGeometry(state, h);
-  const geomKey = `${geo.thresholdDb}|${state.params.softness}|${verticalZoom}|${view.sizeKey}`;
+  const baseGeo = scopeGeometry(state, h);
+  // Хвиля, зони та пунктири масштабуються на outGain; dB-сітка — ні.
+  const geo = { ...baseGeo, ampToY: (a) => baseGeo.ampToY(a * outGain) };
+  const geomKey = `${geo.thresholdDb}|${state.params.softness}|${outGain}|${verticalZoom}|${view.sizeKey}`;
   const underKey = `${geomKey}|${barsOnScreen}|${state.qnPerBar}|${wf.prevId}`;
 
   if (geomKey !== outGeomKey || !outOver) {
-    outOver = buildOverLayer(outOver, view, geo);
+    let label = null;
+    if (Math.abs(outDb) > 0.005) {
+      const ceilDb = geo.thresholdDb + outDb;
+      label = (ceilDb > 0 ? "CEILING +" : "CEILING ") + ceilDb.toFixed(1) + " dB";
+    }
+    outOver = buildOverLayer(outOver, view, geo, label);
     outFillGrad = makeZoneGradient(ctx, h, geo, 0.30);
     outLineGrad = makeZoneGradient(ctx, h, geo, 1.0);
     outGeomKey = geomKey;
   }
   if (underKey !== outUnderKey || !outUnder) {
-    outUnder = buildUnderLayer(outUnder, view, state, geo, n, wf.outPrevious);
+    outUnder = buildUnderLayer(outUnder, view, state, geo, n, wf.outPrevious, baseGeo.ampToY);
     outUnderKey = underKey;
   }
 
@@ -500,7 +513,7 @@ function renderShaper (state) {
   const drawDot = (amp) => {
     const [outAmp, clipAmt] = chainProcess(amp, thresholdLin, knee01, sat01);
     const x = cx + Math.min(1, Math.max(-1, amp / range)) * (w / 2);
-    const y = cy - Math.min(1, Math.max(-1, outAmp / range)) * (h / 2);
+    const y = cy - Math.min(1, Math.max(-1, outAmp * outGain / range)) * (h / 2);
     const col = clipAmt < 0.001 ? COLORS.normal : (clipAmt < 0.85 ? COLORS.soft : COLORS.hard);
 
     ctx.fillStyle = col;
@@ -613,21 +626,22 @@ function scopeGeometry (state, h) {
 }
 
 // Спільний under-шар для обох панелей: сітки + бліда попередня хвиля.
-function buildUnderLayer (layer, view, state, geo, n, previousArr) {
+function buildUnderLayer (layer, view, state, geo, n, previousArr, gridAmpToY) {
   layer = ensureLayer(layer, view);
   const ctx = layer.ctx;
   const w = view.w, h = view.h;
+  const gridY = gridAmpToY || geo.ampToY;
 
   // dB grid
   ctx.strokeStyle = COLORS.grid;
   ctx.lineWidth = 1;
   ctx.beginPath();
   DB_MARKS.forEach((db) => {
-    const y = geo.ampToY(dbToGain(db));
+    const y = gridY(dbToGain(db));
     if (y >= 0 && y <= h) { ctx.moveTo(0, crisp(y)); ctx.lineTo(w, crisp(y)); }
   });
   ctx.stroke();
-  drawDbLabels(ctx, w, h, geo.ampToY);
+  drawDbLabels(ctx, w, h, gridY);
 
   // musical grid
   const qnPerBar = state.qnPerBar;
@@ -649,7 +663,7 @@ function buildUnderLayer (layer, view, state, geo, n, previousArr) {
 }
 
 // Спільний over-шар: пунктири knee + threshold з підписом.
-function buildOverLayer (layer, view, geo) {
+function buildOverLayer (layer, view, geo, labelOverride) {
   layer = ensureLayer(layer, view);
   const ctx = layer.ctx;
   const w = view.w;
@@ -668,7 +682,7 @@ function buildOverLayer (layer, view, geo) {
     ctx.setLineDash([]);
   }
 
-  drawThresholdLines(ctx, w, geo.ampToY, geo.thresholdDb, geo.thresholdLin, 1.5);
+  drawThresholdLines(ctx, w, geo.ampToY, geo.thresholdDb, geo.thresholdLin, 1.5, labelOverride);
   return layer;
 }
 
