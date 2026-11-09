@@ -2,7 +2,14 @@
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
-<title>CLIPONIZER No.8</title>
+<title>CLIPONIZER</title>
+<!-- Preload: браузер починає тягнути картинки й скрипти паралельно з CSS,
+     а не після його розбору (раніше фон вантажився лише після style.css). -->
+<link rel="preload" href="Resources/background.png" as="image">
+<link rel="preload" href="Resources/knob.png" as="image">
+<link rel="preload" href="Resources/DeltaOff.png" as="image">
+<link rel="modulepreload" href="juce_interop.js">
+<link rel="modulepreload" href="ui.js">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -15,7 +22,7 @@
         <div id="clipLedLabel">CLIP</div>
       </div>
       <div id="titleBlock">
-        <div id="modelLabel">MODEL-CLIPONIZER No.8</div>
+        <div id="modelLabel">MODEL-CLIPONIZER</div>
         <div id="subtitleLabel">DR.DOC SOUNDLAB-EQUIPMENT</div>
         <div id="titleLabel">CLIP-TO-ZERO&nbsp;&nbsp;&nbsp;/&nbsp;&nbsp;&nbsp;NO LATENCY CLIPPER</div>
       </div>

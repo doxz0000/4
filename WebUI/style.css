@@ -11,6 +11,9 @@
   --thresholdLine: #e0d9c0;
   --textAmber:     #25b900;
   --ledOff:        #1c2a1c;
+  /* Середній колір background.png. Має збігатися з webViewBootColour
+     у PluginEditor.cpp — тоді старт без білого/кольорового спалаху. */
+  --bootBg:        #111610;
 }
 
 * { box-sizing: border-box; }
@@ -21,7 +24,7 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: var(--panelDark);
+  background: var(--bootBg);
   font-family: "Segoe UI", Arial, sans-serif;
   -webkit-user-select: none;
   user-select: none;
@@ -37,7 +40,12 @@ html, body {
   padding: 12px;
   border: 2px solid var(--metalEdge);
   background: linear-gradient(180deg, rgb(61 59 55 / 21%), rgb(43 42 40 / 50%)), url(Resources/background.png) center / cover no-repeat, linear-gradient(180deg, var(--panelLight), var(--panelDark));
+  /* Показуємо UI одним кадром, коли фон, ручки і стан готові
+     (клас .ready ставить ui.js) — без поетапного "проявлення". */
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
 }
+#app.ready { opacity: 1; }
 
 
 
@@ -204,7 +212,7 @@ canvas {
 #scopeProgress {
   position: absolute;
   right: 26px;
-  bottom: -15px;
+  bottom: 25px;
   color: var(--textAmber);
   opacity: 0.65;
   font: bold 10px "Consolas", monospace;

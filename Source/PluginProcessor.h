@@ -1,5 +1,5 @@
 /*
-    MODEL-CLIPONIZER No.8 — DR.DOC SOUNDLAB-EQUIPMENT
+    MODEL-CLIPONIZER — DR.DOC SOUNDLAB-EQUIPMENT
     CLIP-TO-ZERO / No Latency Clipper
 
     Цей файл БЕЗ ЗМІН відносно оригіналу — DSP-логіка і оброблення

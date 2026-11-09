@@ -2,7 +2,7 @@
 import { getNativeFunction } from "./juce_interop.js";
 
 // =====================================================================
-// MODEL-CLIPONIZER No.8 — Web UI logic
+// MODEL-CLIPONIZER — Web UI logic
 //
 // Комунікація з C++:
 //   JS -> C++ :  callNative("setParam", id, value)
@@ -914,7 +914,13 @@ async function init () {
     setupKnobDragging(knobEl, id);
   });
 
-  const initial = await callNativeWithTimeout(1500, "getInitialState");
+  // Стан вшитий C++ у сторінку (withInitialisationData) — без round-trip.
+  // Фолбек на виклик getInitialState — якщо даних немає (напр. сторінку
+  // відкрито просто у браузері для перегляду дизайну).
+  const injected = window.__JUCE__?.initialisationData?.initialState?.[0];
+  const initial = (injected && injected.params)
+    ? injected
+    : await callNativeWithTimeout(1500, "getInitialState");
 
   if (initial && initial.params) {
     initial.params.forEach((p) => {
@@ -939,6 +945,26 @@ async function init () {
   }
 
   requestRender();
+
+  // Дозволяємо C++ слати стан (до цього він не пушить, щоб не забивати
+  // чергу WebView2 під час завантаження).
+  callNative("uiReady").catch(() => {});
+
+  revealWhenLoaded();
+}
+
+// Показуємо UI, коли картинки (фон, ручки) завантажені — одним кадром.
+// Страховка: не довше ніж 600 мс, щоб ніколи не лишитись з порожнім вікном.
+function revealWhenLoaded () {
+  const app = document.getElementById("app");
+  const show = () => requestAnimationFrame(() => app.classList.add("ready"));
+
+  if (document.readyState === "complete") { show(); return; }
+
+  let done = false;
+  const once = () => { if (!done) { done = true; show(); } };
+  window.addEventListener("load", once, { once: true });
+  setTimeout(once, 600);
 }
 
 document.addEventListener("DOMContentLoaded", init);

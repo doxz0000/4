@@ -16,7 +16,7 @@ juce_add_plugin(ClipOnizer
     PLUGIN_MANUFACTURER_CODE     Drdc
     PLUGIN_CODE                  Clp8
     FORMATS                      VST3 AU Standalone
-    PRODUCT_NAME                 "CLIPONIZER No.8"
+    PRODUCT_NAME                 "CLIPONIZER"
     IS_SYNTH                     FALSE
     NEEDS_MIDI_INPUT             FALSE
     NEEDS_MIDI_OUTPUT            FALSE

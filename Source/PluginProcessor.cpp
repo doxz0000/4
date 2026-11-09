@@ -1,5 +1,5 @@
 /*
-    MODEL-CLIPONIZER No.8 — DR.DOC SOUNDLAB-EQUIPMENT
+    MODEL-CLIPONIZER — DR.DOC SOUNDLAB-EQUIPMENT
     PluginProcessor.cpp
 
     Без змін відносно оригіналу.

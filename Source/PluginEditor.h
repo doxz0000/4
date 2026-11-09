@@ -1,5 +1,5 @@
 /*
-    MODEL-CLIPONIZER No.8 — DR.DOC SOUNDLAB-EQUIPMENT
+    MODEL-CLIPONIZER — DR.DOC SOUNDLAB-EQUIPMENT
     PluginEditor.h
 
     HTML/CSS UI через juce::WebBrowserComponent (JUCE 8).
@@ -27,6 +27,7 @@ public:
     explicit ClipOnizerAudioProcessorEditor (ClipOnizerAudioProcessor&);
     ~ClipOnizerAudioProcessorEditor() override;
 
+    void paint (juce::Graphics&) override;
     void resized() override;
 
     // Публічні, бо викликаються з лямбд у Options (побудова webView
@@ -39,6 +40,7 @@ public:
     juce::var jsEndGesture      (const juce::Array<juce::var>& args);
     juce::var jsSetTimeDivision (const juce::Array<juce::var>& args);
     juce::var jsGetInitialState (const juce::Array<juce::var>& args);
+    juce::var jsUiReady         (const juce::Array<juce::var>& args);
 
 private:
     void timerCallback() override;
@@ -57,9 +59,13 @@ private:
 
     ClipOnizerAudioProcessor& audioProcessor;
 
-    // ВАЖЛИВО: webView створюється з Options, які прив'язані до *this —
-    // ініціалізується в конструкторі через member-init-list.
-    juce::WebBrowserComponent webView;
+    // Нативний фон, який видно миттєво, поки стартує WebView2 (~0.2–0.8 с).
+    juce::Image backgroundImage;
+
+    // JS повідомляє (uiReady), що сторінка ініціалізована. До цього
+    // не пушимо стан — інакше скрипти накопичуються в черзі WebView2
+    // і гальмують перше відображення.
+    bool uiReady = false;
 
     // -------------------------------------------------------------------
     // Стан захоплення осцилоскопа — перенесено 1:1 зі старого
@@ -77,6 +83,13 @@ private:
     int  previousSerial = 0;            // лічильник версій previous для JS
     int64_t lastPushedWriteCounter = -1;
     juce::String lastPushedMeta;        // параметри/піки минулого пушу
+
+    // ВАЖЛИВО: webView оголошено ОСТАННІМ полем. Його Options будуються в
+    // member-init-list і вже звертаються до стану вище (getInitialState
+    // передається як initialisationData), тож усі поля мають бути готові.
+    // До того ж webView знищується першим — лямбди з посиланням на *this
+    // гарантовано не переживуть решту полів.
+    juce::WebBrowserComponent webView;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipOnizerAudioProcessorEditor)
 };

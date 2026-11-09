@@ -1,4 +1,4 @@
-# CLIPONIZER No.8 — перехід на HTML/CSS UI (JUCE 8 WebBrowserComponent)
+# CLIPONIZER — перехід на HTML/CSS UI (JUCE 8 WebBrowserComponent)
 
 ## 1. Куди класти файли
 
