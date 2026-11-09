@@ -17,7 +17,7 @@ namespace
     }
 
     // Колір, яким WebView2 заливає себе до першого кадру сторінки (замість
-    // білого за замовчуванням). Це середній колір background.png — тож
+    // білого за замовчуванням). Це середній колір background.jpg — тож
     // перехід "нативний фон -> WebView" майже непомітний.
     // Має збігатися з --bootBg у style.css.
     const juce::Colour webViewBootColour { 0xff111610 };
@@ -71,16 +71,13 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (ClipOnizerAudioP
       audioProcessor (p),
       webView (makeWebViewOptions (*this))
 {
-    // Декодуємо фон один раз (ImageCache тримає його між відкриттями вікна).
-    backgroundImage = juce::ImageCache::getFromMemory (BinaryData::background_png,
-                                                       BinaryData::background_pngSize);
-
     // WebView спершу прихований: поки WebView2 стартує і вантажить сторінку,
-    // видно нативний фон з paint(). Інакше JUCE малює на місці ще не
-    // створеного WebView2 білий прямокутник (WebBrowserComponent::paint ->
+    // видно лише суцільний темний колір з paint(). Інакше JUCE малює на місці
+    // ще не створеного WebView2 білий прямокутник (WebBrowserComponent::paint ->
     // fallbackPaint). Контролер WebView2 створюється і для прихованого
     // компонента, щойно в редактора з'являється вікно (peer).
-    // Показуємо його, коли JS скаже "uiShown" (картинки готові).
+    // Показуємо його, коли JS скаже "uiShown" (картинки й перший кадр готові),
+    // і тоді весь інтерфейс плавно проявляється (fade-in у CSS).
     addChildComponent (webView);
 
     // Страховка: якщо JS з якоїсь причини не відповів — показати все одно.
@@ -91,6 +88,9 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (ClipOnizerAudioP
     });
 
     lastCapturedCounter = audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
+
+    // Аудіопотік починає рахувати дані для UI лише поки вікно відкрите.
+    audioProcessor.editorOpen.store (true, std::memory_order_release);
 
     // JUCE 9: resource provider обслуговує корінь getResourceProviderRoot()
     // (https://juce.backend). Навігація на будь-який інший домен (напр.
@@ -107,35 +107,28 @@ ClipOnizerAudioProcessorEditor::ClipOnizerAudioProcessorEditor (ClipOnizerAudioP
     startTimerHz (30);
 }
 
-ClipOnizerAudioProcessorEditor::~ClipOnizerAudioProcessorEditor() = default;
+ClipOnizerAudioProcessorEditor::~ClipOnizerAudioProcessorEditor()
+{
+    audioProcessor.editorOpen.store (false, std::memory_order_release);
+}
 
 // Видно лише до моменту, поки WebView прихований (сторінка ще вантажиться).
-// Повторює фон #app зі style.css (background.png + затемнювальний градієнт
-// + рамка), щоб підміна на WebView була непомітною.
+// Суцільний колір = --bootBg у style.css: показ WebView непомітний, а далі
+// весь інтерфейс одним шаром проявляється з цього кольору.
 void ClipOnizerAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    const auto bounds = getLocalBounds().toFloat();
-
     g.fillAll (webViewBootColour);
-
-    if (backgroundImage.isValid())
-        g.drawImage (backgroundImage, bounds, juce::RectanglePlacement::fillDestination);
-
-    // linear-gradient(180deg, rgb(61 59 55 / 21%), rgb(43 42 40 / 50%))
-    g.setGradientFill (juce::ColourGradient (juce::Colour (61, 59, 55).withAlpha (0.21f), 0.0f, 0.0f,
-                                             juce::Colour (43, 42, 40).withAlpha (0.50f), 0.0f, bounds.getBottom(),
-                                             false));
-    g.fillRect (bounds);
-
-    // border: 2px solid var(--metalEdge)
-    g.setColour (juce::Colour (0xff5a564e));
-    g.drawRect (getLocalBounds(), 2);
 }
 
 void ClipOnizerAudioProcessorEditor::showWebView()
 {
-    if (! webView.isVisible())
-        webView.setVisible (true);
+    if (webView.isVisible())
+        return;
+
+    webView.setVisible (true);
+
+    // Запускаємо fade-in саме тоді, коли WebView реально видно.
+    webView.evaluateJavascript ("window.__reveal&&window.__reveal()");
 }
 
 void ClipOnizerAudioProcessorEditor::resized()
@@ -180,8 +173,8 @@ ClipOnizerAudioProcessorEditor::getResource (const juce::String& url)
             return makeResource (data, size, mime);
     }
 
-    if (path.endsWithIgnoreCase ("background.png"))
-        return makeResource (BinaryData::background_png, BinaryData::background_pngSize, "image/png");
+    if (path.endsWithIgnoreCase ("background.jpg"))
+        return makeResource (BinaryData::background_jpg, BinaryData::background_jpgSize, "image/jpeg");
 
     if (path.endsWithIgnoreCase ("knob.png"))
         return makeResource (BinaryData::knob_png, BinaryData::knob_pngSize, "image/png");

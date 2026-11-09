@@ -44,7 +44,7 @@ public:
     juce::var jsUiReady         (const juce::Array<juce::var>& args);
     juce::var jsUiShown         (const juce::Array<juce::var>& args);
 
-    // Показує WebView (до цього під ним видно нативний фон з paint()).
+    // Показує WebView (до цього видно темний колір з paint()) і запускає fade-in.
     void showWebView();
 
     // Скільки "колонок" (min/max пар) хвилі в одному такті осцилоскопа.
@@ -80,9 +80,6 @@ private:
                                     bool outField, int from, int to);
 
     ClipOnizerAudioProcessor& audioProcessor;
-
-    // Нативний фон, який видно миттєво, поки стартує WebView2 (~0.2–0.8 с).
-    juce::Image backgroundImage;
 
     // JS повідомляє (uiReady), що сторінка ініціалізована. До цього
     // не пушимо стан — інакше скрипти накопичуються в черзі WebView2

@@ -137,6 +137,17 @@ public:
         s.dcY1 = 0.0;
     }
 
+    // True when no channel has a residual tail left (DC blocker settled and
+    // last input ~0) — then a silent block can be skipped without a click.
+    bool isQuiet() const noexcept
+    {
+        for (const auto& s : state)
+            if (std::abs (s.dcY1) > 1.0e-8 || std::abs (s.x1) > 1.0e-6)
+                return false;
+
+        return true;
+    }
+
     // paramsChanging: true while drive/threshold are being smoothed —
     // forces the previous antiderivative to be recomputed with current coeffs.
     float process (int ch, float x, float thresholdLin, const Coeffs& c,
@@ -290,6 +301,10 @@ public:
     std::atomic<float> scopeLivePeakPos { 0.0f };   // огинаюча позитивних піків
     std::atomic<float> scopeLivePeakNeg { 0.0f };   // огинаюча негативних піків (значення <= 0) // <-- нове: піковий рівень для точки на Clip Shaper
 
+    // Чи відкрите вікно плагіна. Ставить/знімає редактор. Поки false,
+    // аудіопотік не рахує нічого для UI (осцилограф, піки, CLIP LED).
+    std::atomic<bool> editorOpen { false };
+
     void setOscilloscopeBars (float bars) noexcept
     {
         bars = juce::jlimit (0.25f, 8.0f, bars);
@@ -334,7 +349,13 @@ private:
     ScopeBucket scopeAcc {};
     int scopeAccCount = 0;
 
+    // Стан UI-обчислень на аудіопотоці (див. editorOpen).
+    bool uiWasActive = false;
+    bool scopeNeedsAlign = false;   // перший блок після відкриття вікна — вирівняти по такту
+
     void resetScopeWriter() noexcept;
+    void setUiActive (bool active) noexcept;
+    void alignScopeToBlockStart (int64_t blockId, int64_t bucketsIntoBlock) noexcept;
     void flushScopeBucket() noexcept;
     void startScopeBlock (int64_t blockId) noexcept;
 

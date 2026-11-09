@@ -199,7 +199,7 @@ function setupKnobDragging (knobEl, paramId) {
     const d = getDescriptor();
     if (!d) return;
     const defaultValue = paramId === "threshold" ? 0.0
-                        : paramId === "softness"  ? 20.0
+                        : paramId === "softness"  ? 0.0
                         : 0.0;
     d.currentValue = defaultValue;
     setKnobVisual(paramId, defaultValue);
@@ -905,6 +905,16 @@ window.__pluginUpdate = function (state) {
   }
   latestState = state;
   barsOnScreen = state.barsOnScreen;
+
+  // Поки UI ще не показаний, малюємо синхронно: rAF у прихованому WebView2
+  // може не спрацювати, а осцилоскопи мають бути готові до fade-in.
+  if (!firstFrameDone && shaperView && scopeView) {
+    render();
+    firstFrameDone = true;
+    resolveFirstFrame();
+    return;
+  }
+
   requestRender();
 };
 
@@ -950,7 +960,7 @@ async function init () {
     // Фолбек (напр. якщо відкрито просто у браузері для перегляду дизайну)
     paramDescriptors.input     = { min: -24, max: 24, step: 0.01, label: "dB", currentValue: 0 };
     paramDescriptors.threshold = { min: -24, max: 10, step: 0.01, label: "dB", currentValue: 0 };
-    paramDescriptors.softness  = { min: 0,   max: 100, step: 0.1, label: "%",  currentValue: 20 };
+    paramDescriptors.softness  = { min: 0,   max: 100, step: 0.1, label: "%",  currentValue: 0 };
     paramDescriptors.output    = { min: -24, max: 24, step: 0.01, label: "dB", currentValue: 0 };
     paramDescriptors.saturator = { min: 0,   max: 100, step: 0.1, label: "%",  currentValue: 0 };
     Object.keys(paramDescriptors).forEach((id) => setKnobVisual(id, paramDescriptors[id].currentValue));
@@ -966,19 +976,41 @@ async function init () {
 }
 
 // Поки сторінка вантажиться, сам WebView прихований на боці C++, а
-// користувач бачить нативний фон плагіна (той самий background.png).
-// Коли картинки (фон, ручки, Delta) декодовані — кажемо C++ "uiShown",
-// і він показує WebView одним кадром, без білого/порожнього проміжку.
-// requestAnimationFrame тут не використовуємо: у прихованому WebView2
-// він може не спрацювати. Страховка: не довше ніж 600 мс.
+// користувач бачить суцільний темний колір (--bootBg).
+// Коли картинки декодовані і перший кадр осцилоскопів намальований —
+// кажемо C++ "uiShown". Він показує WebView і викликає window.__reveal(),
+// після чого весь #app плавно проявляється (opacity 0 -> 1, див. style.css).
+// Страховка: не довше ніж 1000 мс.
+let firstFrameDone = false;
+let resolveFirstFrame = () => {};
+const firstFrameDrawn = new Promise((resolve) => { resolveFirstFrame = resolve; });
+
+let revealed = false;
+window.__reveal = function () {
+  if (revealed) return;
+  revealed = true;
+  const app = document.getElementById("app");
+  const show = () => app.classList.add("shown");
+  requestAnimationFrame(show);
+  setTimeout(show, 50);   // якщо rAF запізнюється
+};
+
 function revealWhenLoaded () {
-  document.getElementById("app").classList.add("ready");
+  const inPlugin = !!window.__JUCE__;
 
   let done = false;
   const notify = () => {
     if (done) return;
     done = true;
+
+    if (!inPlugin) {          // перегляд дизайну у звичайному браузері
+      window.__reveal();
+      return;
+    }
+
     callNative("uiShown").catch(() => {});
+    // Страховка: якщо C++ з якоїсь причини не викликав __reveal.
+    setTimeout(() => window.__reveal(), 400);
   };
 
   const decodeImage = (src) => {
@@ -989,10 +1021,12 @@ function revealWhenLoaded () {
 
   const pending = [...document.images].map((img) =>
     (img.decode ? img.decode() : Promise.resolve()).catch(() => {}));
-  pending.push(decodeImage("Resources/background.png"));
+  pending.push(decodeImage("Resources/background.jpg"));
+  pending.push(decodeImage("Resources/DeltaOn.png"));
+  if (inPlugin) pending.push(firstFrameDrawn);
 
   Promise.all(pending).then(notify);
-  setTimeout(notify, 600);
+  setTimeout(notify, 1000);
 }
 
 // Вимикаємо стандартне контекстне меню WebView2 (правий клік).

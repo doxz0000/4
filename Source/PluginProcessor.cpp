@@ -43,7 +43,7 @@ ClipOnizerAudioProcessor::createParameterLayout()
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         idSoftness, "Softness",
-        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 20.0f,
+        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
         juce::AudioParameterFloatAttributes().withLabel ("%")));
 
     params.push_back (std::make_unique<juce::AudioParameterBool> (
@@ -103,6 +103,11 @@ void ClipOnizerAudioProcessor::prepareToPlay (double sampleRate, int)
         oscilloscopeConfigVersion.load (std::memory_order_acquire);
 
     clipIndicatorLevel.store (0.0f, std::memory_order_release);
+
+    // Якщо вікно відкрите — перший processBlock знову "увімкне" UI-обчислення
+    // і вирівняє осцилограф по такту.
+    uiWasActive = false;
+    scopeNeedsAlign = false;
 }
 
 void ClipOnizerAudioProcessor::releaseResources()
@@ -148,6 +153,69 @@ void ClipOnizerAudioProcessor::startScopeBlock (int64_t blockId) noexcept
     scopeActiveBlockLocal = blockId;
 }
 
+// Вікно відкрили/закрили (викликається з processBlock, аудіопотік).
+void ClipOnizerAudioProcessor::setUiActive (bool active) noexcept
+{
+    uiWasActive = active;
+
+    if (active)
+    {
+        // Чистий старт: старі незавершені дані й огинаючі не потрібні.
+        scopeAcc = {};
+        scopeAccCount = 0;
+        scopeActiveBlockLocal = std::numeric_limits<int64_t>::min();
+        scopeNeedsAlign = true;
+
+        scopeLoopPreviousPpq = 0.0;
+        scopeLoopPreviousIsLooping = false;
+        lastScopeConfigVersion = oscilloscopeConfigVersion.load (std::memory_order_acquire);
+
+        clipEnvelope = 0.0f;
+        clipHoldSamplesLeft = 0;
+        livePeakPosEnvelope = 0.0f;
+        livePeakNegEnvelope = 0.0f;
+        livePeakPosHoldSamples = 0;
+        livePeakNegHoldSamples = 0;
+    }
+    else
+    {
+        flushScopeBucket();
+        scopeActiveBlockLocal = std::numeric_limits<int64_t>::min();
+
+        // Наступний редактор не повинен підхопити застарілий такт.
+        scopeBlockStartCounter.store (scopeCounterLocal, std::memory_order_release);
+        scopeBlockId.store (std::numeric_limits<int64_t>::min(), std::memory_order_release);
+
+        clipIndicatorLevel.store (0.0f, std::memory_order_release);
+        scopeLivePeakPos.store (0.0f, std::memory_order_release);
+        scopeLivePeakNeg.store (0.0f, std::memory_order_release);
+    }
+}
+
+// Вікно відкрили посеред такту: такт починається "в минулому", за
+// bucketsIntoBlock бакетів до поточного семпла. Ця частина заповнюється
+// нулями, тож нові дані малюються на правильному місці по горизонталі.
+void ClipOnizerAudioProcessor::alignScopeToBlockStart (int64_t blockId,
+                                                       int64_t bucketsIntoBlock) noexcept
+{
+    flushScopeBucket();
+
+    const int64_t start = scopeCounterLocal;
+    const int64_t offset = juce::jmax<int64_t> (0, bucketsIntoBlock);
+    const int64_t toFill = juce::jmin<int64_t> (offset, scopeBufferSize);
+
+    for (int64_t k = offset - toFill; k < offset; ++k)
+        scopeBuffer[static_cast<size_t> ((start + k) % scopeBufferSize)] = {};
+
+    scopeCounterLocal = start + offset;
+
+    scopeBlockStartCounter.store (start, std::memory_order_release);
+    scopeBlockId.store (blockId, std::memory_order_release);
+    scopeActiveBlockLocal = blockId;
+
+    scopeWriteCounter.store (scopeCounterLocal, std::memory_order_release);
+}
+
 bool ClipOnizerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto mainOut = layouts.getMainOutputChannelSet();
@@ -189,6 +257,43 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // Coefficients computed once per block; recomputed per sample only while smoothing.
     Saturator::Coeffs satCoeffs = Saturator::makeCoeffs (saturatorSmoothed.getCurrentValue());
+
+    // -------------------------------------------------------------------------
+    // Вікно закрите -> нічого для UI не рахуємо (осцилограф, піки, CLIP LED).
+    const bool uiActive = editorOpen.load (std::memory_order_acquire);
+
+    if (uiActive != uiWasActive)
+        setUiActive (uiActive);
+
+    // Тиша на вході (і ніщо не згладжується, і в сатуратора немає хвоста):
+    // вихід — нулі, DSP по семплах пропускаємо.
+    bool silent = false;
+
+    if (numSamples > 0
+        && ! inputGainSmoothed.isSmoothing()
+        && ! outputGainSmoothed.isSmoothing()
+        && ! saturatorSmoothed.isSmoothing()
+        && ! satThresholdSmoothed.isSmoothing()
+        && saturator.isQuiet())
+    {
+        float peak = 0.0f;
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            peak = juce::jmax (peak, buffer.getMagnitude (ch, 0, numSamples));
+
+        const float maxGain = inputGainSmoothed.getTargetValue()
+                            * juce::jmax (1.0f, outputGainSmoothed.getTargetValue());
+
+        silent = peak * maxGain < 1.0e-6f;   // < -120 dBFS на виході
+    }
+
+    if (silent)
+    {
+        buffer.clear();
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            saturator.trackBypassed (ch, 0.0f);
+    }
 
     // -------------------------------------------------------------------------
     // Host transport is read ONLY here, from processBlock().
@@ -257,7 +362,7 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const uint32_t configVersion =
         oscilloscopeConfigVersion.load (std::memory_order_acquire);
 
-    if (configVersion != lastScopeConfigVersion)
+    if (uiActive && configVersion != lastScopeConfigVersion)
     {
         flushScopeBucket();
         scopeActiveBlockLocal = std::numeric_limits<int64_t>::min();
@@ -356,15 +461,18 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     int64_t callbackBlockId = 0;
     double scopePpqStart = 0.0;
 
-    if (! transportStopped && numSamples > 0)
+    const bool writeScope = uiActive && ! transportStopped;
+
+    if (writeScope && numSamples > 0)
     {
         scopePpqStart = havePpq ? ppqStart : fallbackPpq;
         const double ppqLast = scopePpqStart
                              + static_cast<double> (numSamples - 1) * ppqPerSample;
 
         double unusedPos = 0.0;
+        double firstPos = 0.0;
         int64_t firstId = 0;
-        getBlockIdAndPosition (scopePpqStart, firstId, unusedPos);
+        getBlockIdAndPosition (scopePpqStart, firstId, firstPos);
 
         // Loop-detector state as it is right after the first sample.
         const double prevPpqAfterFirst = scopeLoopPreviousPpq;
@@ -386,9 +494,19 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             scopeLoopPreviousIsLooping = prevLoopingAfterFirst;
         }
 
-        if (! havePpq)
-            fallbackPpq += static_cast<double> (numSamples) * ppqPerSample;
+        // Перший блок після відкриття вікна: такт почався раніше.
+        if (scopeNeedsAlign)
+        {
+            const double samplesIntoBlock = firstPos / juce::jmax (1.0e-12, ppqPerSample);
+            alignScopeToBlockStart (firstId,
+                static_cast<int64_t> (samplesIntoBlock) / scopeBucketSamples);
+            scopeNeedsAlign = false;
+        }
     }
+
+    // Позиція для хостів без PPQ — рахуємо завжди, навіть при закритому вікні.
+    if (! transportStopped && ! havePpq)
+        fallbackPpq += static_cast<double> (numSamples) * ppqPerSample;
 
     float blockMaxReduction = 1.0f;   // max |in| / |out| кліпера за блок (1 = без кліпу)
     float blockPeakPos = 0.0f;   // найбільше позитивне значення в блоці
@@ -396,71 +514,77 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     float* const* channelData = buffer.getArrayOfWritePointers();
 
-    for (int i = 0; i < numSamples; ++i)
+    // Тиша і вікно закрите (або транспорт стоїть) — цикл не потрібен зовсім.
+    const int samplesToLoop = (! silent || writeScope) ? numSamples : 0;
+
+    for (int i = 0; i < samplesToLoop; ++i)
     {
-        const float inGain  = inputGainSmoothed.getNextValue();
-        const float outGain = outputGainSmoothed.getNextValue();
-
-        const bool satChanging = saturatorSmoothed.isSmoothing()
-                              || satThresholdSmoothed.isSmoothing();
-        const float satAmount = saturatorSmoothed.getNextValue();
-        const float satThreshold = satThresholdSmoothed.getNextValue();
-
-        if (satChanging)
-            satCoeffs = Saturator::makeCoeffs (satAmount);
-
         float scopeValue = 0.0f;
         float scopeOut = 0.0f;
 
-        for (int ch = 0; ch < numChannels; ++ch)
+        if (! silent)
         {
-            float* const data = channelData[ch];
+            const float inGain  = inputGainSmoothed.getNextValue();
+            const float outGain = outputGainSmoothed.getNextValue();
 
-            const float dry = data[i] * inGain;
+            const bool satChanging = saturatorSmoothed.isSmoothing()
+                                  || satThresholdSmoothed.isSmoothing();
+            const float satAmount = saturatorSmoothed.getNextValue();
+            const float satThreshold = satThresholdSmoothed.getNextValue();
 
-            // SATURATOR (before the clipper)
-            const float sat = saturator.process (ch, dry, satThreshold,
-                                                 satCoeffs, satChanging);
+            if (satChanging)
+                satCoeffs = Saturator::makeCoeffs (satAmount);
 
-            const auto clipResult =
-                ClipShaper::process (sat, thresholdLin, knee01);
-
-            const float clipped = clipResult.first;
-
-            // DELTA = whole chain: what saturator + clipper changed.
-            data[i] = deltaOn
-                    ? dry - clipped
-                    : clipped * outGain;
-
-            if (ch == 0)
+            for (int ch = 0; ch < numChannels; ++ch)
             {
-                // "BEFORE" scope: signal before saturator + clipper.
-                // "AFTER" panel: signal after saturator + clipper,
-                // or the DELTA (dry - clipped) when Delta monitoring is on.
-                scopeValue = dry;
-                scopeOut = deltaOn ? (dry - clipped) : clipped;
+                float* const data = channelData[ch];
 
-                // Live peaks are pre-saturation: the shaper panel draws
-                // the combined saturator+clipper curve.
-                if (dry > blockPeakPos)
-                    blockPeakPos = dry;
+                const float dry = data[i] * inGain;
 
-                if (dry < blockPeakNeg)
-                    blockPeakNeg = dry;
-            }
+                // SATURATOR (before the clipper)
+                const float sat = saturator.process (ch, dry, satThreshold,
+                                                     satCoeffs, satChanging);
 
-            // Наскільки кліпер зрізав цей семпл: |до| / |після|.
-            if (clipResult.second > 0.0f)
-            {
-                const float absIn  = std::abs (sat);
-                const float absOut = std::abs (clipped);
+                const auto clipResult =
+                    ClipShaper::process (sat, thresholdLin, knee01);
 
-                if (absOut > 1.0e-6f)
-                    blockMaxReduction = juce::jmax (blockMaxReduction, absIn / absOut);
+                const float clipped = clipResult.first;
+
+                // DELTA = whole chain: what saturator + clipper changed.
+                data[i] = deltaOn
+                        ? dry - clipped
+                        : clipped * outGain;
+
+                if (uiActive && ch == 0)
+                {
+                    // "BEFORE" scope: signal before saturator + clipper.
+                    // "AFTER" panel: signal after saturator + clipper,
+                    // or the DELTA (dry - clipped) when Delta monitoring is on.
+                    scopeValue = dry;
+                    scopeOut = deltaOn ? (dry - clipped) : clipped;
+
+                    // Live peaks are pre-saturation: the shaper panel draws
+                    // the combined saturator+clipper curve.
+                    if (dry > blockPeakPos)
+                        blockPeakPos = dry;
+
+                    if (dry < blockPeakNeg)
+                        blockPeakNeg = dry;
+                }
+
+                // Наскільки кліпер зрізав цей семпл: |до| / |після|.
+                if (uiActive && clipResult.second > 0.0f)
+                {
+                    const float absIn  = std::abs (sat);
+                    const float absOut = std::abs (clipped);
+
+                    if (absOut > 1.0e-6f)
+                        blockMaxReduction = juce::jmax (blockMaxReduction, absIn / absOut);
+                }
             }
         }
 
-        if (transportStopped)
+        if (! writeScope)
             continue;
 
         // Determine exact block for this sample.
@@ -492,6 +616,10 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         if (++scopeAccCount >= scopeBucketSamples)
             flushScopeBucket();
     }
+
+    // Огинаючі нижче потрібні лише для UI.
+    if (! uiActive)
+        return;
 
     // CLIP LED: пікове пониження рівня кліпером у dB.
     // Миттєва атака, коротке утримання (щоб UI на 30 Гц не пропустив

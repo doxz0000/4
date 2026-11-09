@@ -11,7 +11,7 @@
   --thresholdLine: #e0d9c0;
   --textAmber:     #25b900;
   --ledOff:        #1c2a1c;
-  /* Середній колір background.png. Має збігатися з webViewBootColour
+  /* Середній колір background.jpg. Має збігатися з webViewBootColour
      у PluginEditor.cpp — тоді старт без білого/кольорового спалаху. */
   --bootBg:        #111610;
 }
@@ -39,10 +39,15 @@ html, body {
   flex-direction: column;
   padding: 12px;
   border: 2px solid var(--metalEdge);
-  background: linear-gradient(180deg, rgb(61 59 55 / 21%), rgb(43 42 40 / 50%)), url(Resources/background.png) center / cover no-repeat, linear-gradient(180deg, var(--panelLight), var(--panelDark));
-  /* Без fade-in: поки сторінка не готова, WebView прихований на боці C++
-     (див. uiShown у PluginEditor.cpp), а під ним видно нативний фон. */
+  background: linear-gradient(180deg, rgb(61 59 55 / 21%), rgb(43 42 40 / 50%)), url(Resources/background.jpg) center / cover no-repeat, linear-gradient(180deg, var(--panelLight), var(--panelDark));
+  /* Весь інтерфейс проявляється одним шаром з --bootBg. Клас .shown додає
+     window.__reveal(), який C++ викликає, коли WebView стає видимим
+     (див. showWebView у PluginEditor.cpp). */
+  opacity: 0;
+  transition: opacity 0.25s ease-out;
 }
+
+#app.shown { opacity: 1; }
 
 
 

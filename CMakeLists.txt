@@ -41,7 +41,7 @@ juce_generate_juce_header(ClipOnizer)
 # бо ці файли компілюються всередину плагіна через BinaryData.
 juce_add_binary_data(ClipOnizerResources
     SOURCES
-        Resources/background.png
+        Resources/background.jpg
         Resources/knob.png
         Resources/DeltaOn.png
         Resources/DeltaOff.png
