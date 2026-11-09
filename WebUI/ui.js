@@ -115,6 +115,7 @@ function setupKnobDragging (knobEl, paramId) {
     startValue = d.currentValue !== undefined ? d.currentValue : d.value;
 
     callNative("beginGesture", paramId);
+    document.body.classList.add("cursor-hidden");
     e.preventDefault();
   });
 
@@ -139,8 +140,14 @@ function setupKnobDragging (knobEl, paramId) {
     if (!dragging) return;
     dragging = false;
     if (activeDragParam === paramId) activeDragParam = null;
+    document.body.classList.remove("cursor-hidden");
     callNative("endGesture", paramId);
   });
+
+  // Страховка: якщо вікно втратить фокус під час перетягування,
+  // курсор повертається, щоб не залишився прихованим назавжди.
+  const restoreCursor = () => document.body.classList.remove("cursor-hidden");
+  window.addEventListener("blur", restoreCursor);
 
   // Double-click resets to default (matches old setDoubleClickReturnValue)
   knobEl.addEventListener("dblclick", () => {

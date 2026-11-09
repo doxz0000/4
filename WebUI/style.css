@@ -364,3 +364,9 @@ canvas {
     position: relative;
     left: -32px;
 }
+
+/* Курсор приховується під час перетягування будь-якої ручки */
+.cursor-hidden,
+.cursor-hidden * {
+  cursor: none !important;
+}
