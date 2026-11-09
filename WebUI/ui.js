@@ -979,4 +979,7 @@ function revealWhenLoaded () {
   setTimeout(once, 600);
 }
 
+// Вимикаємо стандартне контекстне меню WebView2 (правий клік).
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
 document.addEventListener("DOMContentLoaded", init);
