@@ -53,6 +53,155 @@ public:
     }
 };
 
+//==============================================================================
+// SATURATOR — analog-style whole-curve waveshaper, placed BEFORE the clipper.
+//
+// Works in a threshold-normalised domain u = x / T:
+//     s(u) = (tanh(a(u+b)) - tanh(ab)) / D,   D chosen so |s(±1)| <= 1
+// - quiet signal gets up to a/tanh(a) more level (denser, "glued" low end),
+// - the gain falls smoothly to x1 at the threshold and below x1 above it,
+//   so the saturator never pushes anything over the threshold,
+// - bias b adds a little asymmetry -> 2nd harmonic (tube/tape warmth).
+//
+// Anti-aliasing: 1st-order ADAA applied ONLY to the nonlinear residual
+// r(u) = s(u) - u. The clean (linear) part passes untouched, so there is
+// no latency and no high-frequency loss; only the harmonics are smoothed.
+// A ~5 Hz DC blocker on the residual removes DC introduced by the bias.
+//==============================================================================
+class Saturator
+{
+public:
+    struct Coeffs
+    {
+        double a = 0.0;     // drive
+        double b = 0.0;     // bias (asymmetry)
+        double tab = 0.0;   // tanh(a*b)
+        double invD = 1.0;  // normalisation
+        bool active = false;
+    };
+
+    static Coeffs makeCoeffs (float amount01) noexcept
+    {
+        Coeffs c;
+        const double amt = juce::jlimit (0.0, 1.0, (double) amount01);
+        c.a = 3.0 * std::pow (amt, 1.3);
+
+        if (c.a < 1.0e-4)
+            return c; // inactive -> identity
+
+        // Bias defined in the drive domain (a*b) so asymmetry stays subtle:
+        // ~-33 dB 2nd harmonic at full drive, positive peak ~0.89*T.
+        c.b = (0.06 * amt) / c.a;
+        c.active = true;
+        c.tab = std::tanh (c.a * c.b);
+        const double dPos = std::tanh (c.a * (1.0 + c.b)) - c.tab;
+        const double dNeg = c.tab - std::tanh (c.a * (c.b - 1.0));
+        c.invD = 1.0 / juce::jmax (1.0e-12, juce::jmax (dPos, dNeg));
+        return c;
+    }
+
+    // Static curve (no ADAA) — also mirrored in ui.js for the shaper display.
+    static double shape (double u, const Coeffs& c) noexcept
+    {
+        return (std::tanh (c.a * (u + c.b)) - c.tab) * c.invD;
+    }
+
+    void prepare (double sampleRate) noexcept
+    {
+        dcCoeff = std::exp (-2.0 * juce::MathConstants<double>::pi * 5.0
+                            / juce::jmax (1.0, sampleRate));
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        for (auto& s : state)
+            s = {};
+    }
+
+    // Keeps ADAA history in sync while bypassed so re-engaging is click-free.
+    void trackBypassed (int ch, float x) noexcept
+    {
+        auto& s = state[(size_t) juce::jlimit (0, maxChannels - 1, ch)];
+        s.x1 = x;
+        s.R1Valid = false;
+        s.dcX1 = 0.0;
+        s.dcY1 = 0.0;
+    }
+
+    // paramsChanging: true while drive/threshold are being smoothed —
+    // forces the previous antiderivative to be recomputed with current coeffs.
+    float process (int ch, float x, float thresholdLin, const Coeffs& c,
+                   bool paramsChanging) noexcept
+    {
+        auto& s = state[(size_t) juce::jlimit (0, maxChannels - 1, ch)];
+
+        if (! c.active)
+        {
+            trackBypassed (ch, x);
+            return x;
+        }
+
+        const double T = juce::jmax (1.0e-6, (double) thresholdLin);
+        const double invT = 1.0 / T;
+        const double u  = (double) x * invT;
+        const double u1 = s.x1 * invT;
+
+        const double R0 = antiderivative (u, c);
+
+        if (paramsChanging || ! s.R1Valid)
+            s.R1 = antiderivative (u1, c);
+
+        const double du = u - u1;
+        const double res = std::abs (du) > 1.0e-5
+                         ? (R0 - s.R1) / du
+                         : residual (0.5 * (u + u1), c);
+
+        s.x1 = (double) x;
+        s.R1 = R0;
+        s.R1Valid = true;
+
+        // DC blocker on the residual only.
+        const double y = res - s.dcX1 + dcCoeff * s.dcY1;
+        s.dcX1 = res;
+        s.dcY1 = y;
+
+        return (float) ((double) x + T * y);
+    }
+
+private:
+    static constexpr int maxChannels = 2;
+
+    struct ChannelState
+    {
+        double x1 = 0.0;
+        double R1 = 0.0;
+        bool R1Valid = false;
+        double dcX1 = 0.0;
+        double dcY1 = 0.0;
+    };
+
+    static double logCosh (double z) noexcept
+    {
+        const double az = std::abs (z);
+        return az + std::log1p (std::exp (-2.0 * az)) - 0.69314718055994530942; // ln(2)
+    }
+
+    static double residual (double u, const Coeffs& c) noexcept
+    {
+        return shape (u, c) - u;
+    }
+
+    // d/du R(u) = residual(u)
+    static double antiderivative (double u, const Coeffs& c) noexcept
+    {
+        return (logCosh (c.a * (u + c.b)) / c.a - u * c.tab) * c.invD - 0.5 * u * u;
+    }
+
+    std::array<ChannelState, maxChannels> state {};
+    double dcCoeff = 0.9995;
+};
+
 class ClipOnizerAudioProcessor : public juce::AudioProcessor
 {
 public:
@@ -90,6 +239,7 @@ public:
     static constexpr const char* idThreshold = "threshold";
     static constexpr const char* idSoftness  = "softness";
     static constexpr const char* idDelta     = "delta";
+    static constexpr const char* idSaturator = "saturator";
 
     // -------------------------------------------------------------------------
     // OSCILLOSCOPE DATA
@@ -142,6 +292,10 @@ public:
 private:
     juce::LinearSmoothedValue<float> inputGainSmoothed { 1.0f };
     juce::LinearSmoothedValue<float> outputGainSmoothed { 1.0f };
+    juce::LinearSmoothedValue<float> saturatorSmoothed { 0.0f };      // 0..1
+    juce::LinearSmoothedValue<float> satThresholdSmoothed { 1.0f };   // linear
+
+    Saturator saturator;
 
     float clipEnvelope = 0.0f;
     float livePeakPosEnvelope = 0.0f;

@@ -49,6 +49,11 @@ ClipOnizerAudioProcessor::createParameterLayout()
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         idDelta, "Delta", false));
 
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        idSaturator, "Saturator",
+        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("%")));
+
     return { params.begin(), params.end() };
 }
 
@@ -63,6 +68,17 @@ void ClipOnizerAudioProcessor::prepareToPlay (double sampleRate, int)
 
     outputGainSmoothed.setCurrentAndTargetValue (
         juce::Decibels::decibelsToGain (apvts.getRawParameterValue (idOutput)->load()));
+
+    saturatorSmoothed.reset (sampleRate, 0.02);
+    satThresholdSmoothed.reset (sampleRate, 0.02);
+
+    saturatorSmoothed.setCurrentAndTargetValue (
+        apvts.getRawParameterValue (idSaturator)->load() / 100.0f);
+
+    satThresholdSmoothed.setCurrentAndTargetValue (
+        juce::Decibels::decibelsToGain (apvts.getRawParameterValue (idThreshold)->load()));
+
+    saturator.prepare (sampleRate);
 
     clipEnvelope = 0.0f;
 
@@ -125,6 +141,13 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     const float thresholdLin = juce::Decibels::decibelsToGain (thresholdDb);
     const float knee01 = juce::jlimit (0.0f, 1.0f, softnessPct / 100.0f);
+
+    const float saturatorPct = apvts.getRawParameterValue (idSaturator)->load();
+    saturatorSmoothed.setTargetValue (juce::jlimit (0.0f, 1.0f, saturatorPct / 100.0f));
+    satThresholdSmoothed.setTargetValue (thresholdLin);
+
+    // Coefficients computed once per block; recomputed per sample only while smoothing.
+    Saturator::Coeffs satCoeffs = Saturator::makeCoeffs (saturatorSmoothed.getCurrentValue());
 
     // -------------------------------------------------------------------------
     // Host transport is read ONLY here, from processBlock().
@@ -286,6 +309,14 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         const float inGain  = inputGainSmoothed.getNextValue();
         const float outGain = outputGainSmoothed.getNextValue();
 
+        const bool satChanging = saturatorSmoothed.isSmoothing()
+                              || satThresholdSmoothed.isSmoothing();
+        const float satAmount = saturatorSmoothed.getNextValue();
+        const float satThreshold = satThresholdSmoothed.getNextValue();
+
+        if (satChanging)
+            satCoeffs = Saturator::makeCoeffs (satAmount);
+
         float scopeValue = 0.0f;
         float scopeClipAmount = 0.0f;
 
@@ -295,21 +326,28 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
             const float dry = data[i] * inGain;
 
+            // SATURATOR (before the clipper)
+            const float sat = saturator.process (ch, dry, satThreshold,
+                                                 satCoeffs, satChanging);
+
             const auto clipResult =
-                ClipShaper::process (dry, thresholdLin, knee01);
+                ClipShaper::process (sat, thresholdLin, knee01);
 
             const float clipped = clipResult.first;
             const float clipAmount = clipResult.second;
 
+            // DELTA = whole chain: what saturator + clipper changed.
             data[i] = deltaOn
                     ? dry - clipped
                     : clipped * outGain;
 
             if (ch == 0)
             {
-                // IMPORTANT: scope shows PRE-CLIP signal.
-                scopeValue = dry;
+                // Scope shows the signal ENTERING THE CLIPPER (post-saturation).
+                scopeValue = sat;
 
+                // Live peaks are pre-saturation: the shaper panel draws
+                // the combined saturator+clipper curve.
                  if (dry > blockPeakPos)
                     blockPeakPos = dry;
 
@@ -318,13 +356,15 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
                 const float absDry = std::abs (dry);
 
-                if (absDry > blockPeakAbs)        
+                if (absDry > blockPeakAbs)
                 {
                     blockPeakAbs = absDry;
                     blockPeakSigned = dry;
                 }
 
-                if (absDry > thresholdLin)
+                const float absSat = std::abs (sat);
+
+                if (absSat > thresholdLin)
                 {
                     scopeClipAmount = 1.0f;
                 }
@@ -334,13 +374,13 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                     const float kneeStart = juce::jmax (0.0f,
                                                         thresholdLin - kneeWidth);
 
-                    if (absDry > kneeStart)
+                    if (absSat > kneeStart)
                     {
                         scopeClipAmount =
                             juce::jlimit (
                                 0.001f,
                                 0.849f,
-                                (absDry - kneeStart)
+                                (absSat - kneeStart)
                                 / juce::jmax (0.0005f,
                                               thresholdLin - kneeStart));
                     }

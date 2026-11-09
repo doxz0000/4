@@ -221,6 +221,7 @@ juce::var ClipOnizerAudioProcessorEditor::jsGetInitialState (const juce::Array<j
     paramList.add (describeParam (ClipOnizerAudioProcessor::idThreshold));
     paramList.add (describeParam (ClipOnizerAudioProcessor::idSoftness));
     paramList.add (describeParam (ClipOnizerAudioProcessor::idOutput));
+    paramList.add (describeParam (ClipOnizerAudioProcessor::idSaturator));
 
     obj->setProperty ("params", paramList);
     obj->setProperty ("delta", audioProcessor.apvts.getRawParameterValue (ClipOnizerAudioProcessor::idDelta)->load() > 0.5f);
@@ -424,6 +425,7 @@ void ClipOnizerAudioProcessorEditor::pushStateToBrowser()
          <<     "\"output\":"    << juce::String (valFor (ClipOnizerAudioProcessor::idOutput), 3)    << ","
          <<     "\"threshold\":" << juce::String (valFor (ClipOnizerAudioProcessor::idThreshold), 3) << ","
          <<     "\"softness\":"  << juce::String (valFor (ClipOnizerAudioProcessor::idSoftness), 3)  << ","
+         <<     "\"saturator\":" << juce::String (valFor (ClipOnizerAudioProcessor::idSaturator), 3) << ","
          <<     "\"delta\":"     << (valFor (ClipOnizerAudioProcessor::idDelta) > 0.5 ? "true" : "false")
          << "},"
          << "\"clipLevel\":"    << juce::String (audioProcessor.clipIndicatorLevel.load (std::memory_order_acquire), 4) << ","

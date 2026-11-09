@@ -51,6 +51,26 @@ function clipShaperProcess (x, thresholdLin, knee01) {
   return [sign * outAbs, clipAmount];
 }
 
+// Static curve of Saturator::shape() з PluginProcessor.h (без ADAA/DC-blocker)
+function saturatorProcess (x, thresholdLin, amount01) {
+  const amt = Math.min(1, Math.max(0, amount01));
+  const a = 3.0 * Math.pow(amt, 1.3);
+  if (a < 1e-4) return x;
+  const b = (0.06 * amt) / a;
+  const tab = Math.tanh(a * b);
+  const dPos = Math.tanh(a * (1 + b)) - tab;
+  const dNeg = tab - Math.tanh(a * (b - 1));
+  const invD = 1 / Math.max(1e-12, Math.max(dPos, dNeg));
+  const T = Math.max(1e-6, thresholdLin);
+  const u = x / T;
+  return T * (Math.tanh(a * (u + b)) - tab) * invD;
+}
+
+// Повна крива: SATURATOR -> CLIPPER
+function chainProcess (x, thresholdLin, knee01, sat01) {
+  return clipShaperProcess(saturatorProcess(x, thresholdLin, sat01), thresholdLin, knee01);
+}
+
 // ---------------------------------------------------------------------
 // Global UI state
 // ---------------------------------------------------------------------
@@ -254,6 +274,7 @@ function renderShaper (state) {
   const thresholdDb = state.params.threshold;
   const thresholdLin = dbToGain(thresholdDb);
   const knee01 = Math.min(1, Math.max(0, state.params.softness / 100));
+  const sat01 = Math.min(1, Math.max(0, (state.params.saturator || 0) / 100));
 
   const baseRange = 2.0;
   const effectiveRange = Math.max(0.05, baseRange / Math.max(0.1, verticalZoom));
@@ -301,8 +322,8 @@ function renderShaper (state) {
   for (let i = 0; i < steps; i++) {
     const xA = -maxAmp + (i / steps) * (2 * maxAmp);
     const xB = -maxAmp + ((i + 1) / steps) * (2 * maxAmp);
-    const [outA, clipA] = clipShaperProcess(xA, thresholdLin, knee01);
-    const [outB] = clipShaperProcess(xB, thresholdLin, knee01);
+    const [outA, clipA] = chainProcess(xA, thresholdLin, knee01, sat01);
+    const [outB] = chainProcess(xB, thresholdLin, knee01, sat01);
 
     ctx.strokeStyle = clipA < 0.001 ? cNormal : (clipA < 0.85 ? cSoft : cHard);
     ctx.lineWidth = 2.2;
@@ -333,7 +354,7 @@ function renderShaper (state) {
   liveDotNegSmoothed += (state.livePeakNeg - liveDotNegSmoothed) * 0.6;
 
   const drawDot = (amp) => {
-    const [outAmp, clipAmt] = clipShaperProcess(amp, thresholdLin, knee01);
+    const [outAmp, clipAmt] = chainProcess(amp, thresholdLin, knee01, sat01);
     const x = ampToX(amp), y = ampToY(outAmp);
     const col = clipAmt < 0.001 ? cNormal : (clipAmt < 0.85 ? cSoft : cHard);
     ctx.fillStyle = col;
@@ -530,9 +551,9 @@ function hexToRgba (hex, alpha) {
 // RENDER: KNOBS + DELTA (reflect backend-confirmed values)
 // ---------------------------------------------------------------------
 function renderControls (state) {
-  ["input", "threshold", "softness", "output"].forEach((id) => {
+  ["input", "threshold", "softness", "output", "saturator"].forEach((id) => {
     const d = paramDescriptors[id];
-    if (!d) return;
+    if (!d || state.params[id] === undefined) return;
     // Під час перетягування ручки не перекреслюємо локальне значення
     // значенням, яке ще не підтвердив хост (інакше ручка смикається).
     if (activeDragParam === id) return;
@@ -577,7 +598,7 @@ async function init () {
   setupZoomSlider();
   setupDeltaButton();
 
-  ["Input", "Threshold", "Softness", "Output"].forEach((label) => {
+  ["Input", "Threshold", "Softness", "Output", "Saturator"].forEach((label) => {
     const id = label.toLowerCase();
     const knobEl = document.getElementById(`knob${label}`);
     setupKnobDragging(knobEl, id);
@@ -601,6 +622,7 @@ async function init () {
     paramDescriptors.threshold = { min: -24, max: 10, step: 0.01, label: "dB", currentValue: 0 };
     paramDescriptors.softness  = { min: 0,   max: 100, step: 0.1, label: "%",  currentValue: 20 };
     paramDescriptors.output    = { min: -24, max: 24, step: 0.01, label: "dB", currentValue: 0 };
+    paramDescriptors.saturator = { min: 0,   max: 100, step: 0.1, label: "%",  currentValue: 0 };
     Object.keys(paramDescriptors).forEach((id) => setKnobVisual(id, paramDescriptors[id].currentValue));
   }
 
