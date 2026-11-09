@@ -91,9 +91,7 @@ void ClipOnizerAudioProcessor::prepareToPlay (double sampleRate, int)
     scopeLivePeakPos.store (0.0f, std::memory_order_release);
     scopeLivePeakNeg.store (0.0f, std::memory_order_release);
 
-    scopeWriteCounter.store (0, std::memory_order_release);
-    scopeBlockId.store (std::numeric_limits<int64_t>::min(), std::memory_order_release);
-    scopeBlockStartCounter.store (0, std::memory_order_release);
+    resetScopeWriter();
 
     currentBpm.store (120.0, std::memory_order_release);
     currentQuarterNotesPerBar.store (4.0, std::memory_order_release);
@@ -109,6 +107,45 @@ void ClipOnizerAudioProcessor::prepareToPlay (double sampleRate, int)
 
 void ClipOnizerAudioProcessor::releaseResources()
 {
+}
+
+//==============================================================================
+// SCOPE WRITER (audio thread only)
+//==============================================================================
+void ClipOnizerAudioProcessor::resetScopeWriter() noexcept
+{
+    scopeCounterLocal = 0;
+    scopeActiveBlockLocal = std::numeric_limits<int64_t>::min();
+    scopeAcc = {};
+    scopeAccCount = 0;
+
+    scopeWriteCounter.store (0, std::memory_order_release);
+    scopeBlockId.store (std::numeric_limits<int64_t>::min(), std::memory_order_release);
+    scopeBlockStartCounter.store (0, std::memory_order_release);
+}
+
+void ClipOnizerAudioProcessor::flushScopeBucket() noexcept
+{
+    if (scopeAccCount == 0)
+        return;
+
+    scopeBuffer[static_cast<size_t> (scopeCounterLocal % scopeBufferSize)] = scopeAcc;
+    ++scopeCounterLocal;
+    scopeAccCount = 0;
+
+    // Release after writing the bucket so the UI sees the completed entry.
+    scopeWriteCounter.store (scopeCounterLocal, std::memory_order_release);
+}
+
+void ClipOnizerAudioProcessor::startScopeBlock (int64_t blockId) noexcept
+{
+    // The partial bucket belongs to the previous block; the new block
+    // starts exactly on a bucket boundary.
+    flushScopeBucket();
+
+    scopeBlockStartCounter.store (scopeCounterLocal, std::memory_order_release);
+    scopeBlockId.store (blockId, std::memory_order_release);
+    scopeActiveBlockLocal = blockId;
 }
 
 bool ClipOnizerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -222,11 +259,13 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     if (configVersion != lastScopeConfigVersion)
     {
+        flushScopeBucket();
+        scopeActiveBlockLocal = std::numeric_limits<int64_t>::min();
+
         scopeBlockId.store (std::numeric_limits<int64_t>::min(),
                             std::memory_order_release);
-        scopeBlockStartCounter.store (
-            scopeWriteCounter.load (std::memory_order_relaxed),
-            std::memory_order_release);
+        scopeBlockStartCounter.store (scopeCounterLocal,
+                                      std::memory_order_release);
 
         lastScopeConfigVersion = configVersion;
     }
@@ -307,12 +346,55 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 };
 
 
+    // -------------------------------------------------------------------------
+    // Musical-block detection fast path.
+    // Within one callback PPQ grows linearly, so the loop detector can only
+    // fire on the first sample. If the first and last samples land in the same
+    // block and the callback does not cross loopEnd, the whole callback is one
+    // block and per-sample fmod/floor is skipped.
+    bool perSampleBlocks = false;
+    int64_t callbackBlockId = 0;
+    double scopePpqStart = 0.0;
+
+    if (! transportStopped && numSamples > 0)
+    {
+        scopePpqStart = havePpq ? ppqStart : fallbackPpq;
+        const double ppqLast = scopePpqStart
+                             + static_cast<double> (numSamples - 1) * ppqPerSample;
+
+        double unusedPos = 0.0;
+        int64_t firstId = 0;
+        getBlockIdAndPosition (scopePpqStart, firstId, unusedPos);
+
+        // Loop-detector state as it is right after the first sample.
+        const double prevPpqAfterFirst = scopeLoopPreviousPpq;
+        const bool prevLoopingAfterFirst = scopeLoopPreviousIsLooping;
+
+        int64_t lastId = 0;
+        getBlockIdAndPosition (ppqLast, lastId, unusedPos);
+
+        const bool crossesLoopEnd = isLooping && loopEnd > loopStart
+                                 && scopePpqStart < loopEnd && ppqLast >= loopEnd;
+
+        perSampleBlocks = crossesLoopEnd || firstId != lastId;
+        callbackBlockId = firstId;
+
+        if (perSampleBlocks)
+        {
+            // Re-walk sample by sample from the state after sample 0.
+            scopeLoopPreviousPpq = prevPpqAfterFirst;
+            scopeLoopPreviousIsLooping = prevLoopingAfterFirst;
+        }
+
+        if (! havePpq)
+            fallbackPpq += static_cast<double> (numSamples) * ppqPerSample;
+    }
 
     float blockMaxReduction = 1.0f;   // max |in| / |out| кліпера за блок (1 = без кліпу)
-    float blockPeakAbs = 0.0f;      
-    float blockPeakSigned = 0.0f;
     float blockPeakPos = 0.0f;   // найбільше позитивне значення в блоці
-    float blockPeakNeg = 0.0f;   // найменше (найнегативніше) значення в блоці   
+    float blockPeakNeg = 0.0f;   // найменше (найнегативніше) значення в блоці
+
+    float* const* channelData = buffer.getArrayOfWritePointers();
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -328,12 +410,11 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             satCoeffs = Saturator::makeCoeffs (satAmount);
 
         float scopeValue = 0.0f;
-        float scopeClipAmount = 0.0f;
         float scopeOut = 0.0f;
 
         for (int ch = 0; ch < numChannels; ++ch)
         {
-            auto* data = buffer.getWritePointer (ch);
+            float* const data = channelData[ch];
 
             const float dry = data[i] * inGain;
 
@@ -356,50 +437,16 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 // "BEFORE" scope: signal before saturator + clipper.
                 // "AFTER" panel: signal after saturator + clipper,
                 // or the DELTA (dry - clipped) when Delta monitoring is on.
-                // Zone colouring (scopeClipAmount) is still computed from sat,
-                // so the BEFORE view shows what will get clipped.
                 scopeValue = dry;
                 scopeOut = deltaOn ? (dry - clipped) : clipped;
 
                 // Live peaks are pre-saturation: the shaper panel draws
                 // the combined saturator+clipper curve.
-                 if (dry > blockPeakPos)
+                if (dry > blockPeakPos)
                     blockPeakPos = dry;
 
                 if (dry < blockPeakNeg)
                     blockPeakNeg = dry;
-
-                const float absDry = std::abs (dry);
-
-                if (absDry > blockPeakAbs)
-                {
-                    blockPeakAbs = absDry;
-                    blockPeakSigned = dry;
-                }
-
-                const float absSat = std::abs (sat);
-
-                if (absSat > thresholdLin)
-                {
-                    scopeClipAmount = 1.0f;
-                }
-                else if (knee01 > 0.001f)
-                {
-                    // Same relative knee as ClipShaper::process
-                    const float kneeWidth = juce::jmax (1.0e-6f,
-                                                        juce::jmin (1.0f, knee01) * thresholdLin);
-                    const float kneeStart = thresholdLin - kneeWidth;
-
-                    if (absSat > kneeStart)
-                    {
-                        scopeClipAmount =
-                            juce::jlimit (
-                                0.001f,
-                                0.849f,
-                                (absSat - kneeStart)
-                                / kneeWidth);
-                    }
-                }
             }
 
             // Наскільки кліпер зрізав цей семпл: |до| / |після|.
@@ -417,51 +464,33 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             continue;
 
         // Determine exact block for this sample.
-        double samplePpq = 0.0;
+        int64_t blockId = callbackBlockId;
 
-        if (havePpq)
+        if (perSampleBlocks)
         {
-            samplePpq = ppqStart + static_cast<double> (i) * ppqPerSample;
+            double positionInBlock = 0.0;
+            getBlockIdAndPosition (scopePpqStart + static_cast<double> (i) * ppqPerSample,
+                                   blockId, positionInBlock);
+        }
+
+        if (blockId != scopeActiveBlockLocal)
+            startScopeBlock (blockId);
+
+        // Accumulate min/max into the current bucket.
+        if (scopeAccCount == 0)
+        {
+            scopeAcc = { scopeValue, scopeValue, scopeOut, scopeOut };
         }
         else
         {
-            samplePpq = fallbackPpq;
-            fallbackPpq += ppqPerSample;
+            if (scopeValue < scopeAcc.minV)   scopeAcc.minV = scopeValue;
+            if (scopeValue > scopeAcc.maxV)   scopeAcc.maxV = scopeValue;
+            if (scopeOut   < scopeAcc.minOut) scopeAcc.minOut = scopeOut;
+            if (scopeOut   > scopeAcc.maxOut) scopeAcc.maxOut = scopeOut;
         }
 
-        int64_t blockId = 0;
-        double positionInBlock = 0.0;
-        getBlockIdAndPosition (samplePpq, blockId, positionInBlock);
-
-        const int64_t writeCounter =
-            scopeWriteCounter.load (std::memory_order_relaxed);
-
-        const int64_t activeBlock =
-            scopeBlockId.load (std::memory_order_relaxed);
-
-        if (activeBlock != blockId)
-        {
-            // The next sample belongs to a new musical block.
-            // Start counter points EXACTLY at this sample.
-            scopeBlockStartCounter.store (
-                writeCounter,
-                std::memory_order_release);
-
-            scopeBlockId.store (
-                blockId,
-                std::memory_order_release);
-        }
-
-        const int index =
-            static_cast<int> (writeCounter % scopeBufferSize);
-
-        scopeBuffer[static_cast<size_t> (index)] =
-            { scopeValue, scopeClipAmount, scopeOut };
-
-        // Release after writing the sample so UI sees the completed entry.
-        scopeWriteCounter.store (
-            writeCounter + 1,
-            std::memory_order_release);
+        if (++scopeAccCount >= scopeBucketSamples)
+            flushScopeBucket();
     }
 
     // CLIP LED: пікове пониження рівня кліпером у dB.

@@ -9,10 +9,6 @@
 
 namespace
 {
-    // Скільки "колонок" (min/max пар) хвилі відправляти в JS за один тік.
-    // JS сам розтягує їх на реальну ширину canvas.
-    constexpr int waveformBuckets = 600;
-
     juce::WebBrowserComponent::Resource makeResource (const void* data, int size, const juce::String& mime)
     {
         auto* bytePtr = static_cast<const std::byte*> (data);
@@ -276,6 +272,8 @@ juce::var ClipOnizerAudioProcessorEditor::jsGetInitialState (const juce::Array<j
 
     // Сторінка щойно (пере)завантажилась — наступний пуш має бути повним.
     previousDirty = true;
+    dirtyFrom = 0;
+    lastSentFilled = 0;
     lastPushedMeta.clear();
 
     return juce::var (obj);
@@ -286,23 +284,111 @@ juce::var ClipOnizerAudioProcessorEditor::jsUiReady (const juce::Array<juce::var
     // Сторінка (пере)ініціалізувалась — наступний пуш має бути повним.
     uiReady = true;
     previousDirty = true;
+    dirtyFrom = 0;
+    lastSentFilled = 0;
     lastPushedMeta.clear();
     return true;
 }
 
 //==============================================================================
-// TIME DIVISION — 1:1 порт зі старого OscilloscopeComponent::setTimeDivision
+// DISPLAY WAVE — 600 колонок min/max одного такту
+//==============================================================================
+void ClipOnizerAudioProcessorEditor::DisplayWave::clear() noexcept
+{
+    filled = 0;
+    samples = 0;
+}
+
+void ClipOnizerAudioProcessorEditor::DisplayWave::addBucket (int column, const ScopeBucket& b) noexcept
+{
+    if (column < 0 || column >= waveformBuckets)
+        return;
+
+    if (column < filled)
+    {
+        minV[(size_t) column]   = juce::jmin (minV[(size_t) column],   b.minV);
+        maxV[(size_t) column]   = juce::jmax (maxV[(size_t) column],   b.maxV);
+        minOut[(size_t) column] = juce::jmin (minOut[(size_t) column], b.minOut);
+        maxOut[(size_t) column] = juce::jmax (maxOut[(size_t) column], b.maxOut);
+        return;
+    }
+
+    // Нова колонка (і, про всяк випадок, будь-який пропуск перед нею) —
+    // заповнюємо, щоб у хвилі не було дірок.
+    for (int c = filled; c <= column; ++c)
+    {
+        minV[(size_t) c]   = b.minV;
+        maxV[(size_t) c]   = b.maxV;
+        minOut[(size_t) c] = b.minOut;
+        maxOut[(size_t) c] = b.maxOut;
+    }
+
+    filled = column + 1;
+}
+
+double ClipOnizerAudioProcessorEditor::expectedBlockSamples (float bars) const noexcept
+{
+    const double bpm = juce::jmax (20.0, audioProcessor.currentBpm.load (std::memory_order_acquire));
+    const double qnPerBar = juce::jmax (0.25, audioProcessor.currentQuarterNotesPerBar.load (std::memory_order_acquire));
+    const double sampleRate = audioProcessor.getSampleRate() > 0.0 ? audioProcessor.getSampleRate() : 44100.0;
+    return juce::jmax (1.0, (60.0 / bpm) * sampleRate * qnPerBar * static_cast<double> (bars));
+}
+
+// Перераховує колонки під іншу довжину такту (ratio = oldExpected / newExpected),
+// так само як старий код перемаповував сирі семпли previous на нову ширину.
+void ClipOnizerAudioProcessorEditor::resampleWave (DisplayWave& wave, double ratio)
+{
+    if (wave.filled == 0 || ratio <= 0.0 || std::abs (ratio - 1.0) < 1.0e-9)
+        return;
+
+    DisplayWave out;
+    out.clear();
+
+    for (int c = 0; c < waveformBuckets; ++c)
+    {
+        const int s0 = static_cast<int> (static_cast<double> (c) / ratio);
+
+        if (s0 >= wave.filled)
+            break;
+
+        int s1 = static_cast<int> (std::ceil (static_cast<double> (c + 1) / ratio)) - 1;
+        s1 = juce::jlimit (s0, wave.filled - 1, s1);
+
+        ScopeBucket m { wave.minV[(size_t) s0], wave.maxV[(size_t) s0],
+                        wave.minOut[(size_t) s0], wave.maxOut[(size_t) s0] };
+
+        for (int s = s0 + 1; s <= s1; ++s)
+        {
+            m.minV   = juce::jmin (m.minV,   wave.minV[(size_t) s]);
+            m.maxV   = juce::jmax (m.maxV,   wave.maxV[(size_t) s]);
+            m.minOut = juce::jmin (m.minOut, wave.minOut[(size_t) s]);
+            m.maxOut = juce::jmax (m.maxOut, wave.maxOut[(size_t) s]);
+        }
+
+        out.addBucket (c, m);
+    }
+
+    out.samples = wave.samples;
+    wave = out;
+}
+
+//==============================================================================
+// TIME DIVISION
 //==============================================================================
 void ClipOnizerAudioProcessorEditor::setTimeDivision (float bars) noexcept
 {
+    const double oldExpected = expectedBlockSamples (barsOnScreen);
     barsOnScreen = juce::jlimit (0.25f, 8.0f, bars);
+    const double newExpected = expectedBlockSamples (barsOnScreen);
 
-    previousBlockSamples = blockSamples;
-    previousBlockId = currentBlockId;
+    previous = current;
+    resampleWave (previous, oldExpected / newExpected);
     previousDirty = true;
 
-    blockSamples.clear();
+    current.clear();
     currentBlockId = std::numeric_limits<int64_t>::min();
+    dirtyFrom = 0;
+    lastSentFilled = 0;
 
     lastCapturedCounter = audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
 
@@ -310,156 +396,135 @@ void ClipOnizerAudioProcessorEditor::setTimeDivision (float bars) noexcept
 }
 
 //==============================================================================
-// CAPTURE — 1:1 порт зі старого OscilloscopeComponent::captureNewSamples
+// CAPTURE — читає лише НОВІ бакети процесора і розкладає їх по 600 колонках.
+// Вартість O(нових даних), а не O(всього такту), як було з сирими семплами.
 //==============================================================================
+void ClipOnizerAudioProcessorEditor::startNewCurrentBlock (int64_t blockId, int64_t blockStart)
+{
+    currentBlockId = blockId;
+    currentBlockStart = blockStart;
+    current.clear();
+    lastCapturedCounter = blockStart;
+    dirtyFrom = 0;
+    lastSentFilled = 0;
+}
+
+void ClipOnizerAudioProcessorEditor::addBuckets (int64_t from, int64_t to,
+                                                 int64_t blockStart, double expected)
+{
+    constexpr int64_t bucketSamples = ClipOnizerAudioProcessor::scopeBucketSamples;
+    constexpr int64_t ringSize = ClipOnizerAudioProcessor::scopeBufferSize;
+
+    const double columnsPerSample = static_cast<double> (waveformBuckets) / juce::jmax (1.0, expected);
+
+    from = juce::jmax (from, blockStart);
+
+    for (int64_t abs = from; abs < to; ++abs)
+    {
+        const int64_t s0 = (abs - blockStart) * bucketSamples;
+        const int c0 = static_cast<int> (static_cast<double> (s0) * columnsPerSample);
+
+        if (c0 >= waveformBuckets)
+            break;
+
+        const int c1 = juce::jmin (waveformBuckets - 1,
+            static_cast<int> (static_cast<double> (s0 + bucketSamples - 1) * columnsPerSample));
+
+        const auto& bucket = audioProcessor.scopeBuffer[static_cast<size_t> (abs % ringSize)];
+
+        for (int c = c0; c <= c1; ++c)
+            current.addBucket (c, bucket);
+
+        dirtyFrom = juce::jmin (dirtyFrom, c0);
+    }
+
+    if (to > blockStart)
+        current.samples = juce::jmax (current.samples, (to - blockStart) * bucketSamples);
+}
+
 void ClipOnizerAudioProcessorEditor::captureNewSamples()
 {
-    const int64_t blockId =
-        audioProcessor.scopeBlockId.load (std::memory_order_acquire);
+    constexpr int64_t ringSize = ClipOnizerAudioProcessor::scopeBufferSize;
+    constexpr int64_t noBlock = std::numeric_limits<int64_t>::min();
 
-    const int64_t blockStart =
-        audioProcessor.scopeBlockStartCounter.load (std::memory_order_acquire);
+    // Консистентний знімок: процесор пише start, потім id (release), а бакети
+    // нового блоку — вже після цього. Якщо id не змінився між першим і
+    // останнім читанням, то start/counter належать саме цьому блоку.
+    int64_t blockId = noBlock, blockStart = 0, writeCounter = 0;
 
-    const int64_t writeCounter =
-        audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
+    for (int attempt = 0; attempt < 4; ++attempt)
+    {
+        const int64_t id1 = audioProcessor.scopeBlockId.load (std::memory_order_acquire);
+        blockStart   = audioProcessor.scopeBlockStartCounter.load (std::memory_order_acquire);
+        writeCounter = audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
+        blockId      = audioProcessor.scopeBlockId.load (std::memory_order_acquire);
 
-    if (blockId == std::numeric_limits<int64_t>::min() || writeCounter <= 0)
+        if (id1 == blockId)
+            break;
+    }
+
+    if (blockId == noBlock || writeCounter <= 0)
         return;
+
+    // Процесор скинув лічильники (prepareToPlay) — починаємо з чистого такту.
+    if (lastCapturedCounter > writeCounter || currentBlockStart > writeCounter)
+    {
+        currentBlockId = noBlock;
+        lastCapturedCounter = blockStart;
+    }
+
+    const double expected = expectedBlockSamples (barsOnScreen);
 
     if (currentBlockId != blockId)
     {
-        if (lastCapturedCounter < blockStart)
+        if (currentBlockId != noBlock)
         {
-            const int64_t tail = blockStart - lastCapturedCounter;
+            // Дочитуємо хвіст старого такту.
+            const int64_t tailFrom = juce::jmax (lastCapturedCounter, writeCounter - ringSize);
 
-            for (int64_t n = 0; n < tail; ++n)
+            if (tailFrom < blockStart)
+                addBuckets (tailFrom, blockStart, currentBlockStart, expected);
+
+            if (current.filled > 0)
             {
-                const int64_t absoluteIndex = lastCapturedCounter + n;
-                const int index = static_cast<int> (absoluteIndex % ClipOnizerAudioProcessor::scopeBufferSize);
-
-                blockSamples.push_back (audioProcessor.scopeBuffer[static_cast<size_t> (index)]);
+                previous = current;
+                previousDirty = true;
             }
-
-            lastCapturedCounter = blockStart;
         }
 
-        if (currentBlockId != std::numeric_limits<int64_t>::min() && ! blockSamples.empty())
-        {
-            previousBlockSamples = blockSamples;
-            previousBlockId = currentBlockId;
-            previousDirty = true;
-        }
-
-        currentBlockId = blockId;
-        blockSamples.clear();
-        lastCapturedCounter = blockStart;
+        startNewCurrentBlock (blockId, blockStart);
     }
 
-    const int64_t blockIdBeforeCopy = blockId;
+    const int64_t from = juce::jmax (juce::jmax (lastCapturedCounter, blockStart),
+                                     writeCounter - ringSize);
 
-    if (lastCapturedCounter < blockStart)
-        lastCapturedCounter = blockStart;
-
-    int64_t available = writeCounter - lastCapturedCounter;
-
-    if (available <= 0)
-        return;
-
-    if (available > ClipOnizerAudioProcessor::scopeBufferSize)
-    {
-        lastCapturedCounter = writeCounter - ClipOnizerAudioProcessor::scopeBufferSize;
-        available = ClipOnizerAudioProcessor::scopeBufferSize;
-        blockSamples.clear();
-    }
-
-    const size_t maxStored = static_cast<size_t> (ClipOnizerAudioProcessor::scopeBufferSize);
-
-    for (int64_t n = 0; n < available; ++n)
-    {
-        const int64_t absoluteIndex = lastCapturedCounter + n;
-        const int index = static_cast<int> (absoluteIndex % ClipOnizerAudioProcessor::scopeBufferSize);
-
-        blockSamples.push_back (audioProcessor.scopeBuffer[static_cast<size_t> (index)]);
-    }
+    if (writeCounter > from)
+        addBuckets (from, writeCounter, currentBlockStart, expected);
 
     lastCapturedCounter = writeCounter;
-
-    const int64_t blockIdAfterCopy =
-        audioProcessor.scopeBlockId.load (std::memory_order_acquire);
-
-    if (blockIdAfterCopy != blockIdBeforeCopy)
-    {
-        if (! blockSamples.empty())
-        {
-            previousBlockSamples = blockSamples;
-            previousBlockId = blockIdBeforeCopy;
-            previousDirty = true;
-        }
-
-        blockSamples.clear();
-        currentBlockId = blockIdAfterCopy;
-
-        lastCapturedCounter =
-            audioProcessor.scopeBlockStartCounter.load (std::memory_order_acquire);
-    }
-
-    if (blockSamples.size() > maxStored)
-        blockSamples.erase (blockSamples.begin(),
-                             blockSamples.begin() + static_cast<ptrdiff_t> (blockSamples.size() - maxStored));
-
-    if (previousBlockSamples.size() > maxStored)
-        previousBlockSamples.erase (previousBlockSamples.begin(),
-                                     previousBlockSamples.begin()
-                                         + static_cast<ptrdiff_t> (previousBlockSamples.size() - maxStored));
 }
 
 //==============================================================================
-// WAVEFORM DOWNSAMPLING -> compact flat JSON array of ints:
-//   [min0,max0,min1,max1,...], значення x1000 (JS ділить на 1000).
-// Порожній хвіст (ще не записані бакети) не відправляється.
+// WAVEFORM -> compact flat JSON array of ints:
+//   [min0,max0,min1,max1,...] для колонок [from, to), значення x1000.
 //==============================================================================
-void ClipOnizerAudioProcessorEditor::appendWaveformJson (juce::String& json,
-                                                         const std::vector<ScopeSample>& samples,
-                                                         int buckets,
-                                                         double referenceTotalSamples,
-                                                         float ScopeSample::* field) const
+void ClipOnizerAudioProcessorEditor::appendWaveformJson (juce::String& json, const DisplayWave& wave,
+                                                         bool outField, int from, int to)
 {
     json << "[";
 
-    if (samples.empty() || buckets <= 0)
+    to = juce::jmin (to, wave.filled);
+
+    const auto& mins = outField ? wave.minOut : wave.minV;
+    const auto& maxs = outField ? wave.maxOut : wave.maxV;
+
+    for (int c = juce::jmax (0, from); c < to; ++c)
     {
-        json << "]";
-        return;
-    }
-
-    const double totalForMapping = juce::jmax (1.0, referenceTotalSamples);
-    const size_t availableSamples = samples.size();
-
-    for (int b = 0; b < buckets; ++b)
-    {
-        const size_t sampleA = static_cast<size_t> ((static_cast<double> (b) / static_cast<double> (buckets)) * totalForMapping);
-
-        if (sampleA >= availableSamples)
-            break;
-
-        if (b > 0)
+        if (c > from)
             json << ",";
 
-        size_t sampleB = static_cast<size_t> ((static_cast<double> (b + 1) / static_cast<double> (buckets)) * totalForMapping);
-        sampleB = juce::jmax (sampleB, sampleA + static_cast<size_t> (1));
-        sampleB = juce::jmin (sampleB, availableSamples);
-
-        float minV = 1.0e6f;
-        float maxV = -1.0e6f;
-
-        for (size_t s = sampleA; s < sampleB; ++s)
-        {
-            const float v = samples[s].*field;
-            minV = juce::jmin (minV, v);
-            maxV = juce::jmax (maxV, v);
-        }
-
-        json << juce::roundToInt (minV * 1000.0f) << "," << juce::roundToInt (maxV * 1000.0f);
+        json << juce::roundToInt (mins[(size_t) c] * 1000.0f) << ","
+             << juce::roundToInt (maxs[(size_t) c] * 1000.0f);
     }
 
     json << "]";
@@ -480,12 +545,10 @@ void ClipOnizerAudioProcessorEditor::pushStateToBrowser()
 
     const double bpm = juce::jmax (20.0, audioProcessor.currentBpm.load (std::memory_order_acquire));
     const double qnPerBar = juce::jmax (0.25, audioProcessor.currentQuarterNotesPerBar.load (std::memory_order_acquire));
-    const double sampleRate = audioProcessor.getSampleRate() > 0.0 ? audioProcessor.getSampleRate() : 44100.0;
-    const double totalQuarterNotes = qnPerBar * static_cast<double> (barsOnScreen);
-    const double expectedBlockSamples = juce::jmax (1.0, (60.0 / bpm) * sampleRate * totalQuarterNotes);
+    const double expected = expectedBlockSamples (barsOnScreen);
 
     const float progress = juce::jlimit (0.0f, 1.0f,
-        (float) (static_cast<double> (blockSamples.size()) / expectedBlockSamples));
+        (float) (static_cast<double> (current.samples) / expected));
 
     // ---- "meta" частина: параметри, LED, піки, темп ----
     juce::String meta;
@@ -505,39 +568,47 @@ void ClipOnizerAudioProcessorEditor::pushStateToBrowser()
          << "\"qnPerBar\":"     << juce::String (qnPerBar, 3) << ","
          << "\"barsOnScreen\":" << juce::String (barsOnScreen, 3);
 
-    // ---- Пропуск порожніх тіків: нових семплів немає і нічого не змінилось ----
-    const int64_t writeCounter = audioProcessor.scopeWriteCounter.load (std::memory_order_acquire);
+    // ---- Пропуск порожніх тіків: нових даних немає і нічого не змінилось ----
+    const bool currentDirty = dirtyFrom < waveformBuckets;
 
-    if (writeCounter == lastPushedWriteCounter && ! previousDirty && meta == lastPushedMeta)
+    if (! currentDirty && ! previousDirty && meta == lastPushedMeta)
         return;
 
-    lastPushedWriteCounter = writeCounter;
     lastPushedMeta = meta;
 
-    // ---- Повний пакет ----
+    // ---- Пакет: current/outCurrent — лише змінені колонки [from, filled) ----
+    const int to = current.filled;
+    const int from = juce::jlimit (0, to, juce::jmin (dirtyFrom, lastSentFilled));
+
     juce::String json;
-    json.preallocateBytes (static_cast<size_t> (meta.length()) + (previousDirty ? 24000u : 12000u) + 160u);
+    json.preallocateBytes (static_cast<size_t> (meta.length())
+                           + static_cast<size_t> (to - from) * 24u
+                           + (previousDirty ? 24000u : 0u) + 200u);
 
     json << "if(window.__pluginUpdate)window.__pluginUpdate({" << meta << ","
          << "\"waveform\":{"
          <<     "\"n\":"        << waveformBuckets << ","
          <<     "\"progress\":" << juce::String (progress, 4) << ","
+         <<     "\"from\":"     << from << ","
          <<     "\"current\":";
-    appendWaveformJson (json, blockSamples, waveformBuckets, expectedBlockSamples);
+    appendWaveformJson (json, current, false, from, to);
     json << ",\"outCurrent\":";
-    appendWaveformJson (json, blockSamples, waveformBuckets, expectedBlockSamples, &ScopeSample::out);
+    appendWaveformJson (json, current, true, from, to);
 
     if (previousDirty)
     {
         ++previousSerial;
         json << ",\"prevId\":" << previousSerial << ",\"previous\":";
-        appendWaveformJson (json, previousBlockSamples, waveformBuckets, expectedBlockSamples);
+        appendWaveformJson (json, previous, false, 0, previous.filled);
         json << ",\"outPrevious\":";
-        appendWaveformJson (json, previousBlockSamples, waveformBuckets, expectedBlockSamples, &ScopeSample::out);
+        appendWaveformJson (json, previous, true, 0, previous.filled);
         previousDirty = false;
     }
 
     json << "}});";
+
+    dirtyFrom = waveformBuckets;
+    lastSentFilled = to;
 
     webView.evaluateJavascript (json);
 }
@@ -545,6 +616,10 @@ void ClipOnizerAudioProcessorEditor::pushStateToBrowser()
 //==============================================================================
 void ClipOnizerAudioProcessorEditor::timerCallback()
 {
+    // Захоплення дешеве і йде завжди (щоб не втратити дані такту);
+    // пуш у WebView — лише коли вікно реально видно.
     captureNewSamples();
-    pushStateToBrowser();
+
+    if (isShowing())
+        pushStateToBrowser();
 }

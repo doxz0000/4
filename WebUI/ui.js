@@ -586,17 +586,11 @@ function ensureWaveBuffers (count) {
   }
 }
 
-// Згладжування по серединах сусідніх точок (quadraticCurveTo):
-// крива проходить плавно, без "сходинок", ціна — 1 команда на точку.
+// Прямі відрізки між колонками: на 600 точках виглядає так само, як
+// quadraticCurveTo, але растеризується помітно дешевше.
 function smoothTo (path, xs, ys, from, to, dir, move) {
-  let px = xs[from], py = ys[from];
-  if (move) path.moveTo(px, py); else path.lineTo(px, py);
-  for (let i = from + dir; i !== to + dir; i += dir) {
-    const x = xs[i], y = ys[i];
-    path.quadraticCurveTo(px, py, (px + x) * 0.5, (py + y) * 0.5);
-    px = x; py = y;
-  }
-  path.lineTo(px, py);
+  if (move) path.moveTo(xs[from], ys[from]); else path.lineTo(xs[from], ys[from]);
+  for (let i = from + dir; i !== to + dir; i += dir) path.lineTo(xs[i], ys[i]);
 }
 
 // Вертикальний градієнт зон: hard (за порогом) -> soft (knee) -> normal.
@@ -883,9 +877,27 @@ function render () {
 // ENTRY POINT — called by C++ (~30 Гц, порожні тіки пропускаються).
 // "previous" приходить лише коли змінився (новий prevId) — інакше
 // беремо збережений з минулого пакета.
+// "current"/"outCurrent" приходять ДЕЛЬТОЮ: колонки починаючи з wf.from;
+// усе до from уже є в curArr/outCurArr.
 // ---------------------------------------------------------------------
+let curArr = [];
+let outCurArr = [];
+
+function applyDelta (stored, from, part) {
+  const start = Math.min(stored.length, 2 * from);
+  stored.length = start;
+  for (let i = 0; i < part.length; i++) stored.push(part[i]);
+}
+
 window.__pluginUpdate = function (state) {
   const wf = state.waveform;
+  if (wf && wf.current !== undefined) {
+    const from = wf.from | 0;
+    applyDelta(curArr, from, wf.current);
+    applyDelta(outCurArr, from, wf.outCurrent || []);
+    wf.current = curArr;
+    wf.outCurrent = outCurArr;
+  }
   if (wf && wf.previous === undefined && latestState && latestState.waveform) {
     wf.previous = latestState.waveform.previous;
     wf.outPrevious = latestState.waveform.outPrevious;

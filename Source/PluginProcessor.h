@@ -16,11 +16,15 @@
 #include <utility>
 #include <cstdint>
 
-struct ScopeSample
+// Децимований запис осцилоскопа: min/max за scopeBucketSamples семплів (канал 0).
+// value — сигнал ДО сатуратора + кліпера;
+// out   — ПІСЛЯ сатуратора + кліпера (без output gain); у Delta-режимі — дельта (dry - clipped).
+struct ScopeBucket
 {
-    float value = 0.0f;
-    float clipAmount = 0.0f;
-    float out = 0.0f;   // сигнал ПІСЛЯ сатуратора + кліпера (без output gain); у Delta-режимі — дельта (dry - clipped)
+    float minV = 0.0f;
+    float maxV = 0.0f;
+    float minOut = 0.0f;
+    float maxOut = 0.0f;
 };
 
 class ClipShaper
@@ -249,9 +253,16 @@ public:
     //
     // Absolute counter is intentionally used instead of a modulo-only write
     // position. A modulo position cannot tell whether the ring buffer wrapped.
-    static constexpr int scopeBufferSize = 1 << 20; // 1,048,576 samples
-    std::array<ScopeSample, scopeBufferSize> scopeBuffer {};
+    //
+    // The ring stores min/max BUCKETS of scopeBucketSamples samples, not raw
+    // samples: 32768 buckets * 16 B = 512 KB (was 12 MB of raw samples),
+    // still ~524k samples of headroom while the UI reads every ~33 ms.
+    // Every musical block starts exactly on a bucket boundary.
+    static constexpr int scopeBucketSamples = 16;
+    static constexpr int scopeBufferSize = 1 << 15; // buckets
+    std::array<ScopeBucket, scopeBufferSize> scopeBuffer {};
 
+    // Counts BUCKETS (not samples).
     std::atomic<int64_t> scopeWriteCounter { 0 };
 
     // Current musical block and the absolute counter where it started.
@@ -315,6 +326,16 @@ private:
     // на одном аудио-потоке будут ломать друг другу loop-detection).
     double scopeLoopPreviousPpq = 0.0;
     bool scopeLoopPreviousIsLooping = false;
+
+    // Audio-thread-only mirrors of the scope atomics + bucket accumulator.
+    int64_t scopeCounterLocal = 0;
+    int64_t scopeActiveBlockLocal = std::numeric_limits<int64_t>::min();
+    ScopeBucket scopeAcc {};
+    int scopeAccCount = 0;
+
+    void resetScopeWriter() noexcept;
+    void flushScopeBucket() noexcept;
+    void startScopeBlock (int64_t blockId) noexcept;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipOnizerAudioProcessor)
 };
