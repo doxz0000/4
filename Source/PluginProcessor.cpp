@@ -319,6 +319,7 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         float scopeValue = 0.0f;
         float scopeClipAmount = 0.0f;
+        float scopeOut = 0.0f;
 
         for (int ch = 0; ch < numChannels; ++ch)
         {
@@ -343,8 +344,12 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
             if (ch == 0)
             {
-                // Scope shows the signal ENTERING THE CLIPPER (post-saturation).
-                scopeValue = sat;
+                // "BEFORE" scope: signal before saturator + clipper.
+                // "AFTER" panel: signal after saturator + clipper.
+                // Zone colouring (scopeClipAmount) is still computed from sat,
+                // so the BEFORE view shows what will get clipped.
+                scopeValue = dry;
+                scopeOut = clipped;
 
                 // Live peaks are pre-saturation: the shaper panel draws
                 // the combined saturator+clipper curve.
@@ -430,7 +435,7 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             static_cast<int> (writeCounter % scopeBufferSize);
 
         scopeBuffer[static_cast<size_t> (index)] =
-            { scopeValue, scopeClipAmount };
+            { scopeValue, scopeClipAmount, scopeOut };
 
         // Release after writing the sample so UI sees the completed entry.
         scopeWriteCounter.store (

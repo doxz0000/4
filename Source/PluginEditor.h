@@ -52,7 +52,8 @@ private:
     void appendWaveformJson (juce::String& json,
                              const std::vector<ScopeSample>& samples,
                              int buckets,
-                             double referenceTotalSamples) const;
+                             double referenceTotalSamples,
+                             float ScopeSample::* field = &ScopeSample::value) const;
 
     ClipOnizerAudioProcessor& audioProcessor;
 

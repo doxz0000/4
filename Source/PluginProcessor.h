@@ -20,6 +20,7 @@ struct ScopeSample
 {
     float value = 0.0f;
     float clipAmount = 0.0f;
+    float out = 0.0f;   // сигнал ПІСЛЯ сатуратора + кліпера (без output gain / delta)
 };
 
 class ClipShaper

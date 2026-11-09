@@ -365,7 +365,8 @@ void ClipOnizerAudioProcessorEditor::captureNewSamples()
 void ClipOnizerAudioProcessorEditor::appendWaveformJson (juce::String& json,
                                                          const std::vector<ScopeSample>& samples,
                                                          int buckets,
-                                                         double referenceTotalSamples) const
+                                                         double referenceTotalSamples,
+                                                         float ScopeSample::* field) const
 {
     json << "[";
 
@@ -397,7 +398,7 @@ void ClipOnizerAudioProcessorEditor::appendWaveformJson (juce::String& json,
 
         for (size_t s = sampleA; s < sampleB; ++s)
         {
-            const float v = samples[s].value;
+            const float v = samples[s].*field;
             minV = juce::jmin (minV, v);
             maxV = juce::jmax (maxV, v);
         }
@@ -456,7 +457,7 @@ void ClipOnizerAudioProcessorEditor::pushStateToBrowser()
 
     // ---- Повний пакет ----
     juce::String json;
-    json.preallocateBytes (static_cast<size_t> (meta.length()) + (previousDirty ? 12000u : 6000u) + 128u);
+    json.preallocateBytes (static_cast<size_t> (meta.length()) + (previousDirty ? 24000u : 12000u) + 160u);
 
     json << "if(window.__pluginUpdate)window.__pluginUpdate({" << meta << ","
          << "\"waveform\":{"
@@ -464,12 +465,16 @@ void ClipOnizerAudioProcessorEditor::pushStateToBrowser()
          <<     "\"progress\":" << juce::String (progress, 4) << ","
          <<     "\"current\":";
     appendWaveformJson (json, blockSamples, waveformBuckets, expectedBlockSamples);
+    json << ",\"outCurrent\":";
+    appendWaveformJson (json, blockSamples, waveformBuckets, expectedBlockSamples, &ScopeSample::out);
 
     if (previousDirty)
     {
         ++previousSerial;
         json << ",\"prevId\":" << previousSerial << ",\"previous\":";
         appendWaveformJson (json, previousBlockSamples, waveformBuckets, expectedBlockSamples);
+        json << ",\"outPrevious\":";
+        appendWaveformJson (json, previousBlockSamples, waveformBuckets, expectedBlockSamples, &ScopeSample::out);
         previousDirty = false;
     }
 

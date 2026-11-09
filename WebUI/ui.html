@@ -22,14 +22,8 @@
     </div>
 
     <div id="mainRow">
-      <div class="scopePanel" id="shaperPanel">
-        <div class="panelTitle">CLIP SHAPER</div>
-        <canvas id="shaperCanvas"></canvas>
-        <div class="thresholdLabel" id="shaperThresholdLabel"></div>
-      </div>
-
       <div class="scopePanel2" id="scopePanelEl">
-        <div class="panelTitle">REAL-TIME OSCILLOSCOPE</div>
+        <div class="panelTitle">BEFORE &middot; OSCILLOSCOPE</div>
         <canvas id="scopeCanvas"></canvas>
         <div class="thresholdLabel" id="scopeThresholdLabel"></div>
         <div id="scopeFooter">
@@ -44,6 +38,12 @@
           <div id="bpmLabel">BPM: 120</div>
         </div>
         <div id="scopeProgress"></div>
+      </div>
+
+      <div class="scopePanel" id="shaperPanel">
+        <div class="panelTitle">AFTER &middot; CLIP SHAPER</div>
+        <canvas id="shaperCanvas"></canvas>
+        <div class="thresholdLabel" id="shaperThresholdLabel"></div>
       </div>
 
       <div id="zoomStrip">

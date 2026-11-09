@@ -394,7 +394,8 @@ function buildShaperLayer (view, thresholdDb, knee01, sat01) {
     });
   });
   ctx.stroke();
-  drawDbLabels(ctx, w, h, ampToY);
+  // dB-підписи та пороги малює шар хвилі "після" (outUnder/outOver),
+  // тут вони не потрібні — інакше дублювались би.
 
   // unity diagonal
   ctx.strokeStyle = hexWithAlpha(COLORS.normal, 0.22);
@@ -436,9 +437,13 @@ function buildShaperLayer (view, thresholdDb, knee01, sat01) {
   ctx.globalAlpha = 0.14; ctx.lineWidth = 8;   ctx.stroke(path);
   ctx.globalAlpha = 0.28; ctx.lineWidth = 4;   ctx.stroke(path);
   ctx.globalAlpha = 1.0;  ctx.lineWidth = 2.2; ctx.stroke(path);
-
-  drawThresholdLines(ctx, w, ampToY, thresholdDb, thresholdLin, 1.2);
 }
+
+// Шари хвилі "ПІСЛЯ" (вихід сатуратора + кліпера) на панелі Clip Shaper
+let outUnder = null, outOver = null;
+let outUnderKey = "", outGeomKey = "";
+let outFillGrad = null, outLineGrad = null;
+const SHAPER_CURVE_ALPHA = 0.45;   // прозорість передавальної кривої поверх хвилі
 
 function renderShaper (state) {
   const view = shaperView;
@@ -456,8 +461,35 @@ function renderShaper (state) {
     shaperKey = key;
   }
 
+  // --- вихідна хвиля в часі ---
+  const wf = state.waveform || {};
+  const n = wf.n || 600;
+  const geo = scopeGeometry(state, h);
+  const geomKey = `${geo.thresholdDb}|${state.params.softness}|${verticalZoom}|${view.sizeKey}`;
+  const underKey = `${geomKey}|${barsOnScreen}|${state.qnPerBar}|${wf.prevId}`;
+
+  if (geomKey !== outGeomKey || !outOver) {
+    outOver = buildOverLayer(outOver, view, geo);
+    outFillGrad = makeZoneGradient(ctx, h, geo, 0.30);
+    outLineGrad = makeZoneGradient(ctx, h, geo, 1.0);
+    outGeomKey = geomKey;
+  }
+  if (underKey !== outUnderKey || !outUnder) {
+    outUnder = buildUnderLayer(outUnder, view, state, geo, n, wf.outPrevious);
+    outUnderKey = underKey;
+  }
+
   ctx.clearRect(0, 0, w, h);
+  blit(view, outUnder);
+  drawWave(ctx, wf.outCurrent, n, w, geo.ampToY, outFillGrad, outLineGrad, 1.2);
+  drawPlayhead(ctx, wf.outCurrent, wf.progress, w, h);
+
+  // --- передавальна крива поверх, напівпрозоро ---
+  ctx.globalAlpha = SHAPER_CURVE_ALPHA;
   blit(view, shaperLayer);
+  ctx.globalAlpha = 1.0;
+
+  blit(view, outOver);
 
   // live dots
   liveDotPosSmoothed += (state.livePeakPos - liveDotPosSmoothed) * 0.6;
@@ -580,9 +612,10 @@ function scopeGeometry (state, h) {
   return { thresholdDb, thresholdLin, kneeWidth, kneeStart, ampToY };
 }
 
-function buildScopeUnder (view, state, geo, n) {
-  scopeUnder = ensureLayer(scopeUnder, view);
-  const ctx = scopeUnder.ctx;
+// Спільний under-шар для обох панелей: сітки + бліда попередня хвиля.
+function buildUnderLayer (layer, view, state, geo, n, previousArr) {
+  layer = ensureLayer(layer, view);
+  const ctx = layer.ctx;
   const w = view.w, h = view.h;
 
   // dB grid
@@ -609,14 +642,16 @@ function buildScopeUnder (view, state, geo, n) {
   ctx.strokeStyle = "rgba(232,195,122,0.28)";  ctx.stroke(bars);
 
   // previous (faded) waveform
-  drawWave(ctx, state.waveform.previous, n, w, geo.ampToY,
+  drawWave(ctx, previousArr, n, w, geo.ampToY,
            makeZoneGradient(ctx, h, geo, 0.13),
            makeZoneGradient(ctx, h, geo, 0.32), 1.0);
+  return layer;
 }
 
-function buildScopeOver (view, geo) {
-  scopeOver = ensureLayer(scopeOver, view);
-  const ctx = scopeOver.ctx;
+// Спільний over-шар: пунктири knee + threshold з підписом.
+function buildOverLayer (layer, view, geo) {
+  layer = ensureLayer(layer, view);
+  const ctx = layer.ctx;
   const w = view.w;
 
   // knee lines
@@ -634,6 +669,21 @@ function buildScopeOver (view, geo) {
   }
 
   drawThresholdLines(ctx, w, geo.ampToY, geo.thresholdDb, geo.thresholdLin, 1.5);
+  return layer;
+}
+
+// "Голівка" запису: м'який шлейф + тонка лінія
+function drawPlayhead (ctx, currentArr, progressRaw, w, h) {
+  const progress = clamp01(progressRaw || 0);
+  if (!currentArr || currentArr.length === 0 || progress >= 1) return;
+  const px = progress * w;
+  const trail = ctx.createLinearGradient(px - 28, 0, px, 0);
+  trail.addColorStop(0, hexWithAlpha(COLORS.thresh, 0));
+  trail.addColorStop(1, hexWithAlpha(COLORS.thresh, 0.10));
+  ctx.fillStyle = trail;
+  ctx.fillRect(px - 28, 0, 28, h);
+  ctx.fillStyle = hexWithAlpha(COLORS.thresh, 0.45);
+  ctx.fillRect(px - 0.5, 0, 1, h);
 }
 
 function renderScope (state) {
@@ -648,13 +698,13 @@ function renderScope (state) {
   const underKey = `${geomKey}|${barsOnScreen}|${state.qnPerBar}|${wf.prevId}`;
 
   if (geomKey !== scopeGeomKey || !scopeOver) {
-    buildScopeOver(view, geo);
+    scopeOver = buildOverLayer(scopeOver, view, geo);
     scopeFillGrad = makeZoneGradient(ctx, h, geo, 0.30);
     scopeLineGrad = makeZoneGradient(ctx, h, geo, 1.0);
     scopeGeomKey = geomKey;
   }
   if (underKey !== scopeUnderKey || !scopeUnder) {
-    buildScopeUnder(view, state, geo, n);
+    scopeUnder = buildUnderLayer(scopeUnder, view, state, geo, n, wf.previous);
     scopeUnderKey = underKey;
   }
 
@@ -662,19 +712,7 @@ function renderScope (state) {
   blit(view, scopeUnder);
 
   drawWave(ctx, wf.current, n, w, geo.ampToY, scopeFillGrad, scopeLineGrad, 1.2);
-
-  // "голівка" запису: м'який шлейф + тонка лінія
-  const progress = clamp01(wf.progress || 0);
-  if (wf.current && wf.current.length > 0 && progress < 1) {
-    const px = progress * w;
-    const trail = ctx.createLinearGradient(px - 28, 0, px, 0);
-    trail.addColorStop(0, hexWithAlpha(COLORS.thresh, 0));
-    trail.addColorStop(1, hexWithAlpha(COLORS.thresh, 0.10));
-    ctx.fillStyle = trail;
-    ctx.fillRect(px - 28, 0, 28, h);
-    ctx.fillStyle = hexWithAlpha(COLORS.thresh, 0.45);
-    ctx.fillRect(px - 0.5, 0, 1, h);
-  }
+  drawPlayhead(ctx, wf.current, wf.progress, w, h);
 
   blit(view, scopeOver);
 }
@@ -775,6 +813,7 @@ window.__pluginUpdate = function (state) {
   const wf = state.waveform;
   if (wf && wf.previous === undefined && latestState && latestState.waveform) {
     wf.previous = latestState.waveform.previous;
+    wf.outPrevious = latestState.waveform.outPrevious;
     wf.prevId = latestState.waveform.prevId;
   }
   latestState = state;
