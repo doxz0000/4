@@ -271,6 +271,7 @@ public:
     // Fallback transport when PPQ is unavailable.
     double fallbackPpq = 0.0;
 
+    // Пікове пониження рівня кліпером у dB (0 = кліпу немає). Для CLIP LED.
     std::atomic<float> clipIndicatorLevel { 0.0f };
     std::atomic<float> scopeLivePeakPos { 0.0f };   // огинаюча позитивних піків
     std::atomic<float> scopeLivePeakNeg { 0.0f };   // огинаюча негативних піків (значення <= 0) // <-- нове: піковий рівень для точки на Clip Shaper
@@ -298,7 +299,9 @@ private:
 
     Saturator saturator;
 
-    float clipEnvelope = 0.0f;
+    float clipEnvelope = 0.0f;          // dB gain reduction (peak-hold + release)
+    int clipHoldSamplesLeft = 0;
+    double currentSampleRate = 44100.0;
     float livePeakPosEnvelope = 0.0f;
     float livePeakNegEnvelope = 0.0f;
     uint32_t lastScopeConfigVersion = 0;

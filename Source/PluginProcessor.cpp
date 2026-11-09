@@ -81,6 +81,8 @@ void ClipOnizerAudioProcessor::prepareToPlay (double sampleRate, int)
     saturator.prepare (sampleRate);
 
     clipEnvelope = 0.0f;
+    clipHoldSamplesLeft = 0;
+    currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
 
     livePeakPosEnvelope = 0.0f;
     livePeakNegEnvelope = 0.0f;
@@ -298,7 +300,7 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
 
 
-    float blockMaxClip = 0.0f;
+    float blockMaxReduction = 1.0f;   // max |in| / |out| кліпера за блок (1 = без кліпу)
     float blockPeakAbs = 0.0f;      
     float blockPeakSigned = 0.0f;
     float blockPeakPos = 0.0f;   // найбільше позитивне значення в блоці
@@ -335,7 +337,6 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 ClipShaper::process (sat, thresholdLin, knee01);
 
             const float clipped = clipResult.first;
-            const float clipAmount = clipResult.second;
 
             // DELTA = whole chain: what saturator + clipper changed.
             data[i] = deltaOn
@@ -392,7 +393,15 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 }
             }
 
-            blockMaxClip = juce::jmax (blockMaxClip, clipAmount);
+            // Наскільки кліпер зрізав цей семпл: |до| / |після|.
+            if (clipResult.second > 0.0f)
+            {
+                const float absIn  = std::abs (sat);
+                const float absOut = std::abs (clipped);
+
+                if (absOut > 1.0e-6f)
+                    blockMaxReduction = juce::jmax (blockMaxReduction, absIn / absOut);
+            }
         }
 
         // Determine exact block for this sample.
@@ -443,11 +452,39 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             std::memory_order_release);
     }
 
-    constexpr float attack = 0.35f;
-    constexpr float release = 0.001f;
+    // CLIP LED: пікове пониження рівня кліпером у dB.
+    // Миттєва атака, коротке утримання (щоб UI на 30 Гц не пропустив
+    // короткий транзієнт), далі швидкий експоненційний спад.
+    // Усе в секундах — не залежить від розміру буфера.
+    {
+        constexpr double holdSeconds    = 0.05;
+        constexpr double releaseSeconds = 0.15;
 
-    const float coeff = blockMaxClip > clipEnvelope ? attack : release;
-    clipEnvelope += (blockMaxClip - clipEnvelope) * coeff;
+        const float blockReductionDb =
+            juce::Decibels::gainToDecibels (blockMaxReduction, -100.0f);
+
+        if (blockReductionDb >= clipEnvelope)
+        {
+            clipEnvelope = blockReductionDb;
+            clipHoldSamplesLeft = static_cast<int> (holdSeconds * currentSampleRate);
+        }
+        else if (clipHoldSamplesLeft > 0)
+        {
+            clipHoldSamplesLeft -= numSamples;
+        }
+        else
+        {
+            const float coeff = static_cast<float> (
+                std::exp (-static_cast<double> (numSamples)
+                          / (releaseSeconds * currentSampleRate)));
+
+            clipEnvelope = blockReductionDb + (clipEnvelope - blockReductionDb) * coeff;
+
+            if (clipEnvelope < 0.01f)
+                clipEnvelope = 0.0f;
+        }
+    }
+
     clipIndicatorLevel.store (clipEnvelope, std::memory_order_release);
 
     // --- нове: peak-envelope для точки Clip Shaper ---

@@ -725,15 +725,21 @@ let lastBpmText = "";
 let lastProgressText = "";
 
 function renderMeta (state) {
-  clipLedSmoothed += (state.clipLevel - clipLedSmoothed) * 0.2;
+  // state.clipLevel = пікове пониження рівня кліпером у dB (0 = без кліпу).
+  // Атака/утримання/спад уже зроблені в процесорі — тут без додаткового
+  // згладжування, щоб лампа реагувала одразу.
+  const db = Math.max(0, Number(state.clipLevel) || 0);
+  clipLedSmoothed = db;
 
   let color;
-  if (clipLedSmoothed < 0.05) color = "#1f7a1f";
-  else if (clipLedSmoothed < 0.3) color = "#a6c11a";
-  else if (clipLedSmoothed < 0.65) color = "#ff8a1a";
-  else color = "#ff2e2e";
+  if (db < 0.05)     color = "#1f7a1f";   // кліпу немає
+  else if (db < 1)   color = "#7fd11a";   // ледь торкається
+  else if (db < 3)   color = "#e6d21a";   // помірний кліп
+  else if (db < 6)   color = "#ff8a1a";   // сильний
+  else               color = "#ff2e2e";   // дуже сильний
 
-  const ledLevel = Math.round(clipLedSmoothed * 40) / 40;
+  // Яскравість світіння: 0 dB -> 0, 9+ dB -> 1
+  const ledLevel = db < 0.05 ? 0 : Math.round(Math.min(1, 0.25 + db / 12) * 40) / 40;
   const ledKey = color + ledLevel;
   if (ledKey !== lastLedKey) {
     lastLedKey = ledKey;
