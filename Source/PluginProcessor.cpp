@@ -164,12 +164,18 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     bool isLooping = false;
     double loopStart = 0.0;
     double loopEnd = 0.0;
-  
+
+    // When the host reports a stopped/paused transport, the scope is frozen:
+    // no samples are written, so the playhead in the UI does not jitter
+    // (hosts keep calling processBlock with the same PPQ while paused).
+    bool transportStopped = false;
 
     if (auto* hostPlayHead = getPlayHead())
     {
         if (auto position = hostPlayHead->getPosition())
         {
+            transportStopped = ! position->getIsPlaying();
+
             if (auto hostBpm = position->getBpm())
             {
                 bpm = juce::jmax (20.0, *hostBpm);
@@ -406,6 +412,9 @@ void ClipOnizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                     blockMaxReduction = juce::jmax (blockMaxReduction, absIn / absOut);
             }
         }
+
+        if (transportStopped)
+            continue;
 
         // Determine exact block for this sample.
         double samplePpq = 0.0;
